@@ -1,80 +1,99 @@
 'use client';
 
-import React, { useState } from 'react';
+import React from 'react';
+import { AlertTriangle, Shield, Sliders } from 'lucide-react';
 import { useTrading } from '@/context/TradingContext';
-import { saveTradingSettings } from '@/services/paperPersistenceService';
-import { Sliders, Shield, Key, AlertTriangle, Check } from 'lucide-react';
 import { TerminalSettings } from '@/types/trading';
 
 export const SettingsPanel: React.FC = () => {
-  const { settings, updateSettings, isEngineRunning, setEngineRunning } = useTrading();
-  const [testApiSuccess, setTestApiSuccess] = useState<boolean | null>(null);
-  const [saveStatus, setSaveStatus] = useState<'IDLE' | 'SAVED' | 'ERROR'>('IDLE');
+  const { settings, updateSettings, isEngineRunning, setEngineRunning, riskSnapshot } = useTrading();
 
-  const updateRiskSetting = (patch: Partial<TerminalSettings>) => {
-    updateSettings(patch);
-    setSaveStatus('IDLE');
-    void saveTradingSettings(patch as Partial<TerminalSettings> & Record<string, unknown>)
-      .then(() => setSaveStatus('SAVED'))
-      .catch((error) => {
-        console.error('[SettingsPanel] Failed to save backend risk settings:', error);
-        setSaveStatus('ERROR');
-      });
-  };
-
-  const handleTestConnection = () => {
-    setTestApiSuccess(null);
-    setTimeout(() => setTestApiSuccess(true), 600);
-  };
+  const field = (
+    label: string,
+    key: keyof TerminalSettings,
+    step = '0.1',
+  ) => (
+    <div>
+      <label className="text-zinc-400 block mb-1">{label}</label>
+      <input
+        type="number"
+        step={step}
+        value={Number(settings[key])}
+        onChange={(e) => updateSettings({ [key]: Number(e.target.value) } as Partial<TerminalSettings>)}
+        className="w-full bg-zinc-950 border border-zinc-800 rounded px-3 py-2 text-white font-mono focus:border-emerald-500 focus:outline-none"
+      />
+    </div>
+  );
 
   return (
     <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-5 text-white shadow-xl space-y-5">
       <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
         <div className="flex items-center gap-2">
           <Sliders className="w-5 h-5 text-emerald-400" />
-          <h3 className="font-semibold text-base">Terminal Engine & Risk Controls</h3>
+          <h3 className="font-semibold text-base">Backend Algo Engine & Risk Controls</h3>
         </div>
         <div className="flex items-center gap-3 bg-zinc-950 px-3 py-1.5 rounded-lg border border-zinc-800">
           <span className="text-xs font-semibold">ENGINE: <strong className={isEngineRunning ? 'text-emerald-400' : 'text-zinc-400'}>{isEngineRunning ? 'ON (ARMED)' : 'OFF'}</strong></span>
-          <button onClick={() => setEngineRunning(!isEngineRunning)} className={`w-12 h-6 flex items-center rounded-full p-1 transition duration-300 ${isEngineRunning ? 'bg-emerald-600 justify-end' : 'bg-zinc-700 justify-start'}`}>
-            <div className="bg-white w-4 h-4 rounded-full shadow-md transform" />
+          <button onClick={() => setEngineRunning(!isEngineRunning)} className={`w-12 h-6 flex items-center rounded-full p-1 transition ${isEngineRunning ? 'bg-emerald-600 justify-end' : 'bg-zinc-700 justify-start'}`}>
+            <div className="bg-white w-4 h-4 rounded-full shadow-md" />
           </button>
         </div>
       </div>
 
-      <div className={`p-3 rounded-lg border text-xs flex items-center gap-2 ${isEngineRunning ? 'bg-emerald-950/30 border-emerald-800/60 text-emerald-300' : 'bg-zinc-950/60 border-zinc-800 text-zinc-400'}`}>
-        <AlertTriangle className="w-4 h-4 flex-shrink-0" />
-        <span>{isEngineRunning ? 'Backend engine is ARMED. All supported coins are scanned continuously and paper positions are managed server-side.' : 'Engine is OFF. Live market data continues, but no new automatic paper entries will be created.'}</span>
+      <div className={`p-3 rounded-lg border text-xs flex items-start gap-2 ${riskSnapshot.blocked ? 'bg-amber-950/30 border-amber-800/60 text-amber-300' : isEngineRunning ? 'bg-emerald-950/30 border-emerald-800/60 text-emerald-300' : 'bg-zinc-950/60 border-zinc-800 text-zinc-400'}`}>
+        <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+        <span>
+          {riskSnapshot.blocked
+            ? `Risk engine is blocking new entries: ${riskSnapshot.blockReason}`
+            : isEngineRunning
+              ? 'Backend engine is scanning BTC, ETH, SOL, XRP and BNB using 15m trend → 5m setup → 1m confirmation. Paper execution and exits are server-side.'
+              : 'Engine is OFF. Live market data continues, but no new paper positions will be opened.'}
+        </span>
       </div>
 
       <div className="space-y-3">
-        <div className="flex items-center justify-between">
-          <h4 className="text-xs font-semibold text-zinc-300 flex items-center gap-1.5"><Shield className="w-4 h-4 text-emerald-400" /> Risk Management (Backend DB)</h4>
-          {saveStatus === 'SAVED' && <span className="text-[11px] text-emerald-400">Saved to database</span>}
-          {saveStatus === 'ERROR' && <span className="text-[11px] text-rose-400">Database save failed</span>}
+        <h4 className="text-xs font-semibold text-zinc-300 flex items-center gap-1.5"><Shield className="w-4 h-4 text-emerald-400" /> Capital & Portfolio Risk</h4>
+        <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-4 gap-3 text-xs">
+          {field('Capital ($)', 'capital', '100')}
+          {field('Risk / Trade (%)', 'riskPerTradePct')}
+          {field('Max Daily Loss (%)', 'maxDailyLossPct')}
+          {field('Max Portfolio Risk (%)', 'maxPortfolioRiskPct')}
+          {field('Max Concurrent Trades', 'maxConcurrentTrades', '1')}
+          {field('Max Leverage (x)', 'maxLeverage', '1')}
+          {field('Max Trades / Day', 'maxTradesPerDay', '1')}
+          {field('Max Consecutive Losses', 'maxConsecutiveLosses', '1')}
         </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
-          <div><label className="text-zinc-400 block mb-1">Capital ($)</label><input type="number" value={settings.capital} onChange={(e) => updateRiskSetting({ capital: Number(e.target.value) })} className="w-full bg-zinc-950 border border-zinc-800 rounded px-3 py-2 text-white font-mono focus:border-emerald-500 focus:outline-none" /></div>
-          <div><label className="text-zinc-400 block mb-1">Risk per Trade (%)</label><input type="number" step="0.1" value={settings.riskPerTradePct} onChange={(e) => updateRiskSetting({ riskPerTradePct: Number(e.target.value) })} className="w-full bg-zinc-950 border border-zinc-800 rounded px-3 py-2 text-white font-mono focus:border-emerald-500 focus:outline-none" /></div>
-          <div><label className="text-zinc-400 block mb-1">Max Leverage (x)</label><input type="number" value={settings.maxLeverage} onChange={(e) => updateRiskSetting({ maxLeverage: Number(e.target.value) })} className="w-full bg-zinc-950 border border-zinc-800 rounded px-3 py-2 text-white font-mono focus:border-emerald-500 focus:outline-none" /></div>
-          <div><label className="text-zinc-400 block mb-1">Max Daily Loss (%)</label><input type="number" step="0.1" value={settings.maxDailyLossPct} onChange={(e) => updateRiskSetting({ maxDailyLossPct: Number(e.target.value) })} className="w-full bg-zinc-950 border border-zinc-800 rounded px-3 py-2 text-white font-mono focus:border-emerald-500 focus:outline-none" /></div>
-          <div><label className="text-zinc-400 block mb-1">Max Concurrent Trades</label><input type="number" value={settings.maxConcurrentTrades} onChange={(e) => updateRiskSetting({ maxConcurrentTrades: Number(e.target.value) })} className="w-full bg-zinc-950 border border-zinc-800 rounded px-3 py-2 text-white font-mono focus:border-emerald-500 focus:outline-none" /></div>
-        </div>
-        <p className="text-[11px] text-zinc-500">Backend defaults also enforce minimum setup score 72%, max 8 closed trades/day, 3 consecutive-loss circuit breaker, 30-minute symbol cooldown, ATR-based stop, 1:2 target, and paper fees/slippage.</p>
       </div>
 
       <div className="space-y-3 pt-2 border-t border-zinc-800">
-        <h4 className="text-xs font-semibold text-zinc-300 flex items-center gap-1.5"><Key className="w-4 h-4 text-amber-400" /> Exchange API Credentials (MOCK SIMULATION ONLY)</h4>
-        <div className="bg-amber-950/20 border border-amber-800/40 rounded p-2.5 text-xs text-amber-300">Live execution remains disabled. The new backend engine executes PAPER trades only.</div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-          <div><label className="text-zinc-400 block mb-1">API Key</label><input type="password" placeholder="delta_mock_key_xxxx" value={settings.apiKey} onChange={(e) => updateSettings({ apiKey: e.target.value })} className="w-full bg-zinc-950 border border-zinc-800 rounded px-3 py-2 text-white font-mono focus:border-emerald-500 focus:outline-none" /></div>
-          <div><label className="text-zinc-400 block mb-1">API Secret</label><input type="password" placeholder="delta_mock_secret_xxxx" value={settings.apiSecret} onChange={(e) => updateSettings({ apiSecret: e.target.value })} className="w-full bg-zinc-950 border border-zinc-800 rounded px-3 py-2 text-white font-mono focus:border-emerald-500 focus:outline-none" /></div>
+        <h4 className="text-xs font-semibold text-zinc-300">Strategy Quality & Entry Filters</h4>
+        <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-4 gap-3 text-xs">
+          {field('Minimum Setup Score', 'minSetupScore', '1')}
+          {field('Cooldown (minutes)', 'cooldownMinutes', '1')}
+          {field('Max Entry Drift (%)', 'maxEntryDriftPct', '0.05')}
+          {field('ATR Stop Multiplier', 'atrStopMultiplier', '0.1')}
+          {field('Min ATR (%)', 'minAtrPct', '0.05')}
+          {field('Max ATR (%)', 'maxAtrPct', '0.1')}
+          {field('Min Stop (%)', 'minStopPct', '0.05')}
+          {field('Max Stop (%)', 'maxStopPct', '0.1')}
         </div>
-        <div className="flex items-center gap-3">
-          <button onClick={handleTestConnection} className="bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs px-3 py-2 rounded transition">Test Mock Connection</button>
-          {testApiSuccess && <span className="text-xs text-emerald-400 flex items-center gap-1"><Check className="w-3.5 h-3.5" /> Mock Delta API Ping Successful (200 OK)</span>}
+      </div>
+
+      <div className="space-y-3 pt-2 border-t border-zinc-800">
+        <h4 className="text-xs font-semibold text-zinc-300">Position Management</h4>
+        <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-4 gap-3 text-xs">
+          {field('Target R:R', 'targetRR', '0.1')}
+          {field('Breakeven At (R)', 'breakevenAtR', '0.1')}
+          {field('Trail Start (R)', 'trailingStartR', '0.1')}
+          {field('Trail Distance (R)', 'trailingDistanceR', '0.1')}
+          {field('Max Hold (minutes)', 'maxHoldMinutes', '15')}
+          {field('Fee Rate (%)', 'feeRatePct', '0.01')}
+          {field('Slippage (%)', 'slippagePct', '0.01')}
         </div>
+      </div>
+
+      <div className="pt-3 border-t border-zinc-800 text-[11px] text-zinc-500">
+        Settings are persisted through <code>/api/trading/settings</code>. This execution path is PAPER ONLY; API keys are not used for real orders.
       </div>
     </div>
   );
