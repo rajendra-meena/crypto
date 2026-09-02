@@ -1,6 +1,6 @@
 export type SymbolKey = 'BTCUSDT' | 'ETHUSDT' | 'SOLUSDT' | 'XRPUSDT' | 'BNBUSDT';
 
-export type SignalStatus = 'WATCHING' | 'READY' | 'EXECUTED' | 'EXPIRED' | 'INVALIDATED';
+export type SignalStatus = 'WATCHING' | 'READY' | 'EXECUTED' | 'FILTERED' | 'BLOCKED' | 'EXPIRED' | 'INVALIDATED';
 export type TradeSide = 'BUY' | 'SELL';
 export type MarketTrend = 'STRONG_BULLISH' | 'BULLISH' | 'NEUTRAL' | 'BEARISH' | 'STRONG_BEARISH';
 
