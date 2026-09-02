@@ -1,10 +1,11 @@
-import { ClosedTrade, PaperPosition, TerminalSettings } from '@/types/trading';
+import { AlgoSignal, ClosedTrade, PaperPosition, TerminalSettings } from '@/types/trading';
 
 export interface PersistedPaperState {
   engine_running: boolean;
   positions: PaperPosition[];
   closed_trades: ClosedTrade[];
   executed_signal_ids: string[];
+  signals: AlgoSignal[];
   settings?: Record<string, unknown>;
 }
 
