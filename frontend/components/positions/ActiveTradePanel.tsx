@@ -2,22 +2,24 @@
 
 import React, { useEffect, useState } from 'react';
 import { useTrading } from '@/context/TradingContext';
-import { loadPaperState } from '@/services/paperPersistenceService';
+import { closePaperPosition, loadPaperState } from '@/services/paperPersistenceService';
 import { PaperPosition } from '@/types/trading';
 
 export const ActiveTradePanel: React.FC = () => {
-  const { positions: contextPositions, closePosition, backendConnectionState } = useTrading();
-  const [positions, setPositions] = useState<PaperPosition[]>(contextPositions);
+  const { positions: initialPositions, backendConnectionState } = useTrading();
+  const [positions, setPositions] = useState<PaperPosition[]>(initialPositions);
+  const [closingId, setClosingId] = useState<string | null>(null);
 
-  useEffect(() => {
-    setPositions(contextPositions);
-  }, [contextPositions]);
+  const sync = async () => {
+    const state = await loadPaperState();
+    if (Array.isArray(state.positions)) setPositions(state.positions);
+  };
 
   useEffect(() => {
     if (backendConnectionState !== 'CONNECTED') return;
-
     let cancelled = false;
-    const sync = async () => {
+
+    const poll = async () => {
       try {
         const state = await loadPaperState();
         if (!cancelled && Array.isArray(state.positions)) setPositions(state.positions);
@@ -26,13 +28,25 @@ export const ActiveTradePanel: React.FC = () => {
       }
     };
 
-    void sync();
-    const timer = window.setInterval(sync, 1500);
+    void poll();
+    const timer = window.setInterval(poll, 1500);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
     };
   }, [backendConnectionState]);
+
+  const handleClose = async (positionId: string) => {
+    try {
+      setClosingId(positionId);
+      await closePaperPosition(positionId);
+      await sync();
+    } catch (error) {
+      console.error('[ActiveTradePanel] Backend close failed:', error);
+    } finally {
+      setClosingId(null);
+    }
+  };
 
   if (positions.length === 0) {
     return (
@@ -54,15 +68,9 @@ export const ActiveTradePanel: React.FC = () => {
         <table className="w-full text-left text-xs border-collapse">
           <thead>
             <tr className="border-b border-zinc-800 text-zinc-400 uppercase font-mono text-[11px]">
-              <th className="pb-3 px-3">Symbol</th>
-              <th className="pb-3 px-3">Side</th>
-              <th className="pb-3 px-3">Notional</th>
-              <th className="pb-3 px-3">Entry</th>
-              <th className="pb-3 px-3">Current</th>
-              <th className="pb-3 px-3">SL / TP</th>
-              <th className="pb-3 px-3">Net Est. P&L</th>
-              <th className="pb-3 px-3">Capital %</th>
-              <th className="pb-3 px-3 text-right">Action</th>
+              <th className="pb-3 px-3">Symbol</th><th className="pb-3 px-3">Side</th><th className="pb-3 px-3">Notional</th>
+              <th className="pb-3 px-3">Entry</th><th className="pb-3 px-3">Current</th><th className="pb-3 px-3">SL / TP</th>
+              <th className="pb-3 px-3">Net Est. P&L</th><th className="pb-3 px-3">Capital %</th><th className="pb-3 px-3 text-right">Action</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-zinc-900 font-mono">
@@ -78,9 +86,7 @@ export const ActiveTradePanel: React.FC = () => {
                   <td className="py-3 px-3 text-zinc-400"><span className="text-rose-400">${pos.stopLoss}</span> / <span className="text-emerald-400">${pos.target1}</span></td>
                   <td className={`py-3 px-3 font-bold ${isProfit ? 'text-emerald-400' : 'text-rose-400'}`}>{isProfit ? `+$${pos.unrealizedPnL}` : `-$${Math.abs(pos.unrealizedPnL)}`}</td>
                   <td className={`py-3 px-3 font-bold ${isProfit ? 'text-emerald-400' : 'text-rose-400'}`}>{isProfit ? `+${pos.unrealizedPnLPercent}%` : `${pos.unrealizedPnLPercent}%`}</td>
-                  <td className="py-3 px-3 text-right">
-                    <button onClick={() => closePosition(pos.id)} className="px-2.5 py-1 bg-zinc-900 hover:bg-rose-950 border border-zinc-700 hover:border-rose-700 text-zinc-300 hover:text-rose-300 rounded font-medium text-xs transition">Close</button>
-                  </td>
+                  <td className="py-3 px-3 text-right"><button disabled={closingId === pos.id} onClick={() => void handleClose(pos.id)} className="px-2.5 py-1 bg-zinc-900 hover:bg-rose-950 border border-zinc-700 hover:border-rose-700 disabled:opacity-50 text-zinc-300 hover:text-rose-300 rounded font-medium text-xs transition">{closingId === pos.id ? 'Closing...' : 'Close'}</button></td>
                 </tr>
               );
             })}
