@@ -30,16 +30,13 @@ async def websocket_market(
     manager: ConnectionManager = Depends(get_connection_manager),
     service: MarketDataService = Depends(get_market_data_service),
 ):
-    # Handle CORS for WebSocket upgrade
+    # Validate browser origin before accepting the WebSocket upgrade.
     origin = websocket.headers.get("origin")
     if origin and origin not in ALLOWED_ORIGINS:
-        # Reject connections from unauthorized origins
         await websocket.close(code=1008)
         return
 
-    # Accept the WebSocket connection with CORS headers
-    await websocket.accept()
-    
+    # ConnectionManager owns websocket.accept() so the socket is accepted exactly once.
     await manager.connect(websocket)
     try:
         while True:
@@ -47,5 +44,5 @@ async def websocket_market(
             await manager.handle_message(websocket, message)
     except WebSocketDisconnect:
         manager.disconnect(websocket)
-    except Exception as e:
+    except Exception:
         manager.disconnect(websocket)
