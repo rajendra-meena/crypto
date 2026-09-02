@@ -64,9 +64,27 @@ def _validated_settings(payload: Dict[str, Any]) -> Dict[str, Any]:
     return current
 
 
+def _decorate_risk(risk: Dict[str, Any], settings: Dict[str, Any]) -> Dict[str, Any]:
+    reason = None
+    if float(risk.get("todayRealizedPnL", 0.0)) <= -float(risk.get("maxDailyLoss", 0.0)) and float(risk.get("maxDailyLoss", 0.0)) > 0:
+        reason = "MAX_DAILY_LOSS"
+    elif int(risk.get("consecutiveLosses", 0)) >= int(settings["maxConsecutiveLosses"]):
+        reason = "MAX_CONSECUTIVE_LOSSES"
+    elif int(risk.get("todayTrades", 0)) >= int(settings["maxTradesPerDay"]):
+        reason = "MAX_TRADES_PER_DAY"
+    elif int(risk.get("openPositions", 0)) >= int(settings["maxConcurrentTrades"]):
+        reason = "MAX_CONCURRENT_TRADES"
+    elif float(risk.get("openRisk", 0.0)) >= float(risk.get("maxPortfolioRisk", 0.0)) and float(risk.get("maxPortfolioRisk", 0.0)) > 0:
+        reason = "MAX_PORTFOLIO_RISK"
+    return {**risk, "blocked": reason is not None, "blockReason": reason}
+
+
 @router.get("/state")
 async def get_state():
-    return _require_engine().build_state()
+    engine = _require_engine()
+    state = engine.build_state()
+    state["risk"] = _decorate_risk(state.get("risk", {}), state.get("settings", engine.get_settings()))
+    return state
 
 
 @router.get("/signals")
@@ -105,7 +123,8 @@ async def get_trades(limit: int = 200):
 
 @router.get("/risk")
 async def get_risk():
-    return _require_engine().get_risk_snapshot()
+    engine = _require_engine()
+    return _decorate_risk(engine.get_risk_snapshot(), engine.get_settings())
 
 
 @router.put("/engine")
