@@ -1,42 +1,68 @@
 'use client';
 
-import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  SymbolKey,
-  TickerData,
-  Candle,
-  TechnicalIndicators,
   AlgoSignal,
-  PaperPosition,
+  BackendAnalysis,
+  Candle,
   ClosedTrade,
+  PaperPosition,
+  RiskSnapshot,
+  SymbolKey,
+  TechnicalIndicators,
   TerminalSettings,
+  TickerData,
 } from '@/types/trading';
+import { BackendMarketService, getBackendMarketService } from '@/services/backendMarketService';
 import {
-  getBackendMarketService,
-  BackendMarketService,
-} from '@/services/backendMarketService';
-import { analyzePriceAction } from '@/services/priceActionAnalysis';
-import {
-  deletePaperPosition,
-  loadPaperState,
-  markSignalExecuted,
-  saveClosedTrade,
-  saveEngineState,
-  savePaperPosition,
-} from '@/services/paperPersistenceService';
+  closeTradingPosition,
+  getTradingState,
+  setTradingEngine,
+  updateTradingSettings,
+} from '@/services/tradingApiService';
+
+const ALL_SYMBOLS: SymbolKey[] = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'BNBUSDT'];
 
 const DEFAULT_SETTINGS: TerminalSettings = {
   capital: 10000,
-  riskPerTradePct: 1.5,
-  maxDailyLossPct: 5.0,
-  maxConcurrentTrades: 3,
-  maxLeverage: 10,
+  riskPerTradePct: 0.75,
+  maxDailyLossPct: 2.5,
+  maxPortfolioRiskPct: 1.5,
+  maxConcurrentTrades: 2,
+  maxLeverage: 3,
+  minSetupScore: 72,
+  maxTradesPerDay: 6,
+  maxConsecutiveLosses: 3,
+  cooldownMinutes: 20,
+  atrStopMultiplier: 1.3,
+  targetRR: 2.2,
+  feeRatePct: 0.05,
+  slippagePct: 0.02,
+  maxEntryDriftPct: 0.35,
+  minStopPct: 0.3,
+  maxStopPct: 1.8,
+  breakevenAtR: 1,
+  trailingStartR: 1.5,
+  trailingDistanceR: 0.75,
+  maxHoldMinutes: 240,
+  minAtrPct: 0.18,
+  maxAtrPct: 3.5,
   isLiveMode: false,
   apiKey: '',
   apiSecret: '',
 };
 
-const ALL_SYMBOLS: SymbolKey[] = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'BNBUSDT'];
+const EMPTY_RISK: RiskSnapshot = {
+  todayTrades: 0,
+  todayRealizedPnL: 0,
+  consecutiveLosses: 0,
+  openPositions: 0,
+  openRisk: 0,
+  maxDailyLoss: 0,
+  maxPortfolioRisk: 0,
+  blocked: false,
+  blockReason: null,
+};
 
 const createTicker = (symbol: SymbolKey, price = 0, lastUpdated = 0): TickerData => ({
   symbol,
@@ -50,7 +76,45 @@ const createTicker = (symbol: SymbolKey, price = 0, lastUpdated = 0): TickerData
   lastUpdated,
 });
 
-export type DataSource = 'REAL' | 'MOCK' | 'STALE';
+function settingsFromApi(raw?: Record<string, unknown>): TerminalSettings {
+  const next = { ...DEFAULT_SETTINGS } as Record<string, unknown>;
+  if (raw) {
+    Object.keys(DEFAULT_SETTINGS).forEach((key) => {
+      if (raw[key] !== undefined) next[key] = raw[key];
+    });
+  }
+  // Real exchange execution is intentionally disabled in this app path.
+  next.isLiveMode = false;
+  next.apiKey = '';
+  next.apiSecret = '';
+  return next as unknown as TerminalSettings;
+}
+
+function analysisToIndicators(analysis?: BackendAnalysis): TechnicalIndicators | null {
+  if (!analysis) return null;
+  const trend = analysis.trend === 'BULLISH' ? 'BULLISH' : analysis.trend === 'BEARISH' ? 'BEARISH' : 'NEUTRAL';
+  const structure = analysis.setup === 'BREAKOUT' || analysis.setup === 'BREAKDOWN'
+    ? 'BREAKOUT'
+    : analysis.trend === 'BULLISH'
+      ? 'TRENDING_UP'
+      : analysis.trend === 'BEARISH'
+        ? 'TRENDING_DOWN'
+        : 'RANGE_BOUND';
+  return {
+    rsi: analysis.rsi,
+    macd: { macdLine: 0, signalLine: 0, histogram: 0 },
+    emaTrend: analysis.trend === 'BULLISH' ? 'ABOVE_200_EMA' : analysis.trend === 'BEARISH' ? 'BELOW_200_EMA' : 'CONSOLIDATING',
+    support: analysis.support,
+    resistance: analysis.resistance,
+    marketTrend: trend,
+    momentum: analysis.trigger === 'NONE' ? 'WEAK' : 'STRONG',
+    volatility: analysis.atrPct > 1 ? 'HIGH' : analysis.atrPct < 0.25 ? 'LOW' : 'NORMAL',
+    volumeStrength: analysis.volumeRatio >= 1.2 ? 'HIGH' : analysis.volumeRatio < 0.8 ? 'LOW' : 'AVERAGE',
+    marketStructure: structure,
+    confidence: analysis.setupScore,
+    finalBias: analysis.bias,
+  };
+}
 
 interface TradingContextType {
   symbol: SymbolKey;
@@ -62,10 +126,13 @@ interface TradingContextType {
   watchlist: TickerData[];
   candles: Candle[];
   indicators: TechnicalIndicators | null;
+  analyses: BackendAnalysis[];
+  selectedAnalysis: BackendAnalysis | null;
   signals: AlgoSignal[];
   positions: PaperPosition[];
   closedTrades: ClosedTrade[];
   executedSignalIds: string[];
+  riskSnapshot: RiskSnapshot;
   settings: TerminalSettings;
   updateSettings: (newSettings: Partial<TerminalSettings>) => void;
   takeTrade: (signal: AlgoSignal) => void;
@@ -87,141 +154,137 @@ interface TradingContextType {
 
 const TradingContext = createContext<TradingContextType | undefined>(undefined);
 
-function assertRealMode(dataSource: 'REAL' | 'MOCK' | 'STALE', context: string) {
-  if (process.env.NODE_ENV === 'development' && dataSource !== 'REAL') {
-    console.error(`[DEV GUARD] ${context} attempted with non-REAL data source: ${dataSource}`);
-  }
-}
-
 export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [symbol, setSymbolState] = useState<SymbolKey>('BTCUSDT');
   const symbolRef = useRef<SymbolKey>('BTCUSDT');
+  const backendServiceRef = useRef<BackendMarketService | null>(null);
+
   const [isEngineRunning, setEngineRunningState] = useState(false);
   const [ticker, setTicker] = useState<TickerData>(() => createTicker('BTCUSDT'));
   const [watchlist, setWatchlist] = useState<TickerData[]>(() => ALL_SYMBOLS.map((s) => createTicker(s)));
   const [candles, setCandles] = useState<Candle[]>([]);
-  const [indicators, setIndicators] = useState<TechnicalIndicators | null>(null);
+  const [analyses, setAnalyses] = useState<BackendAnalysis[]>([]);
   const [signals, setSignals] = useState<AlgoSignal[]>([]);
   const [positions, setPositions] = useState<PaperPosition[]>([]);
   const [closedTrades, setClosedTrades] = useState<ClosedTrade[]>([]);
   const [executedSignalIds, setExecutedSignalIds] = useState<string[]>([]);
+  const [riskSnapshot, setRiskSnapshot] = useState<RiskSnapshot>(EMPTY_RISK);
   const [settings, setSettings] = useState<TerminalSettings>(DEFAULT_SETTINGS);
 
   const [backendConnectionState, setBackendConnectionState] = useState<'CONNECTING' | 'CONNECTED' | 'RECONNECTING' | 'DISCONNECTED'>('CONNECTING');
   const [deltaConnectionState, setDeltaConnectionState] = useState<'CONNECTING' | 'CONNECTED' | 'RECONNECTING' | 'STALE' | 'DISCONNECTED'>('CONNECTING');
-  const [dataSource, setDataSource] = useState<'REAL' | 'MOCK' | 'STALE'>('REAL');
-  const [isMarketDataLive, setIsMarketDataLive] = useState(false);
-  const [isMarketDataStale, setIsMarketDataStale] = useState(false);
 
-  const backendServiceRef = useRef<BackendMarketService | null>(null);
-  const paperStateHydratedRef = useRef(false);
+  const selectedAnalysis = useMemo(
+    () => analyses.find((item) => item.symbol === symbol) || null,
+    [analyses, symbol],
+  );
+  const indicators = useMemo(() => analysisToIndicators(selectedAnalysis || undefined), [selectedAnalysis]);
+  const isMarketDataLive = deltaConnectionState === 'CONNECTED';
+  const isMarketDataStale = deltaConnectionState === 'STALE' || deltaConnectionState === 'DISCONNECTED';
+  const dataSource: 'REAL' | 'MOCK' | 'STALE' = isMarketDataLive ? 'REAL' : 'STALE';
+  const canTrade = isMarketDataLive && isEngineRunning && !riskSnapshot.blocked;
 
-  const isMarketDataLiveComputed = deltaConnectionState === 'CONNECTED';
-  const isMarketDataStaleComputed = deltaConnectionState === 'STALE' || deltaConnectionState === 'DISCONNECTED';
-  const canTrade = isMarketDataLiveComputed && isEngineRunning;
+  const applyTradingState = useCallback((state: Awaited<ReturnType<typeof getTradingState>>) => {
+    setEngineRunningState(Boolean(state.engine_running));
+    setPositions(Array.isArray(state.positions) ? state.positions : []);
+    setClosedTrades(Array.isArray(state.closed_trades) ? state.closed_trades : []);
+    setExecutedSignalIds(Array.isArray(state.executed_signal_ids) ? state.executed_signal_ids : []);
+    setSignals(Array.isArray(state.signals) ? state.signals : []);
+    setAnalyses(Array.isArray(state.analyses) ? state.analyses : []);
+    if (state.risk) setRiskSnapshot(state.risk);
+    if (state.settings) setSettings(settingsFromApi(state.settings));
 
-  const setEngineRunning = useCallback((val: boolean) => {
-    setEngineRunningState(val);
-    void saveEngineState(val).catch((error) => {
-      console.error('[TradingContext] Failed to persist engine state:', error);
-    });
+    const analysisMap = new Map((state.analyses || []).map((item) => [item.symbol, item]));
+    const signalMap = new Map((state.signals || []).map((item) => [item.symbol, item]));
+    setWatchlist((prev) => prev.map((coin) => {
+      const analysis = analysisMap.get(coin.symbol);
+      const signal = signalMap.get(coin.symbol);
+      let signalState = analysis?.status || 'WATCHING';
+      if (signal?.status === 'EXECUTED') signalState = 'EXECUTED';
+      else if (signal?.status === 'READY') signalState = 'READY';
+      else if (signal?.status === 'BLOCKED' || signal?.status === 'FILTERED') signalState = signal.status;
+      return {
+        ...coin,
+        signalState,
+        confidence: analysis?.setupScore || signal?.confidence || 0,
+      };
+    }));
   }, []);
 
-  useEffect(() => {
-    setIsMarketDataLive(isMarketDataLiveComputed);
-    setIsMarketDataStale(isMarketDataStaleComputed);
-    setDataSource(deltaConnectionState === 'CONNECTED' ? 'REAL' : 'STALE');
-  }, [deltaConnectionState, isMarketDataLiveComputed, isMarketDataStaleComputed]);
+  const refreshTradingState = useCallback(async () => {
+    const state = await getTradingState();
+    applyTradingState(state);
+  }, [applyTradingState]);
 
   useEffect(() => {
-    if (process.env.NODE_ENV === 'development' && dataSource !== 'REAL') {
-      console.warn(`[DEV GUARD] Running with data source: ${dataSource}. Real market data required for production.`);
-    }
-  }, [dataSource]);
+    let active = true;
+    const sync = async () => {
+      try {
+        const state = await getTradingState();
+        if (active) applyTradingState(state);
+      } catch (error) {
+        console.error('[TradingContext] Trading API state sync failed:', error);
+      }
+    };
+    void sync();
+    const timer = window.setInterval(() => void sync(), 1000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [applyTradingState]);
 
   useEffect(() => {
     const service = getBackendMarketService();
     backendServiceRef.current = service;
-
     service.setCallbacks({
       onTick: (tick) => {
-        assertRealMode('REAL', 'onTick');
         const tickSymbol = tick.symbol as SymbolKey;
-
-        setWatchlist((prev) => {
-          const exists = prev.some((w) => w.symbol === tickSymbol);
-          if (!exists) return [...prev, createTicker(tickSymbol, tick.price, tick.timestamp)];
-          return prev.map((w) =>
-            w.symbol === tickSymbol
-              ? { ...w, price: tick.price, lastUpdated: tick.timestamp }
-              : w
-          );
-        });
-
+        setWatchlist((prev) => prev.map((coin) =>
+          coin.symbol === tickSymbol ? { ...coin, price: tick.price, lastUpdated: tick.timestamp } : coin
+        ));
         if (symbolRef.current === tickSymbol) {
           setTicker((prev) => ({
             ...(prev?.symbol === tickSymbol ? prev : createTicker(tickSymbol)),
             price: tick.price,
             lastUpdated: tick.timestamp,
           }));
-
           setCandles((prev) => {
-            if (prev.length === 0) return prev;
             const updated = [...prev];
-            const sameSymbol = updated
+            const indices = updated
               .map((c, index) => ({ c, index }))
               .filter(({ c }) => c.symbol === tickSymbol && c.timeframe === '1m');
-            const targetIndex = sameSymbol.length ? sameSymbol[sameSymbol.length - 1].index : updated.length - 1;
-            updated[targetIndex] = {
-              ...updated[targetIndex],
+            const target = indices.at(-1)?.index;
+            if (target === undefined) return prev;
+            updated[target] = {
+              ...updated[target],
               close: tick.price,
-              high: Math.max(updated[targetIndex].high, tick.price),
-              low: Math.min(updated[targetIndex].low, tick.price),
+              high: Math.max(updated[target].high, tick.price),
+              low: Math.min(updated[target].low, tick.price),
             };
             return updated;
           });
         }
-
-        setPositions((prev) =>
-          prev.map((pos) => {
-            if (pos.symbol !== tickSymbol) return pos;
-            const priceDiff = pos.side === 'BUY' ? tick.price - pos.entryPrice : pos.entryPrice - tick.price;
-            const unrealizedPnL = parseFloat(((priceDiff / pos.entryPrice) * pos.size * pos.leverage).toFixed(2));
-            const unrealizedPnLPercent = parseFloat((((priceDiff / pos.entryPrice) * 100) * pos.leverage).toFixed(2));
-            return { ...pos, currentPrice: tick.price, unrealizedPnL, unrealizedPnLPercent };
-          })
-        );
       },
-
       onCandle: (candle) => {
-        assertRealMode('REAL', 'onCandle');
         if (candle.symbol !== symbolRef.current) return;
-
         setCandles((prev) => {
-          const existingIndex = prev.findIndex(
-            (c) => c.timeframe === candle.timeframe && c.time === candle.time
-          );
-          if (existingIndex >= 0) {
+          const index = prev.findIndex((c) => c.timeframe === candle.timeframe && c.time === candle.time);
+          if (index >= 0) {
             const updated = [...prev];
-            updated[existingIndex] = candle;
+            updated[index] = candle;
             return updated;
           }
           return [...prev, candle].slice(-500);
         });
       },
-
       onSnapshot: (snapshot) => {
-        assertRealMode('REAL', 'onSnapshot');
         const snapshotSymbol = snapshot.symbol as SymbolKey;
-
-        setWatchlist((prev) =>
-          prev.map((w) =>
-            w.symbol === snapshotSymbol
-              ? { ...w, price: snapshot.current_price, lastUpdated: snapshot.last_update }
-              : w
-          )
-        );
-
+        setWatchlist((prev) => prev.map((coin) =>
+          coin.symbol === snapshotSymbol
+            ? { ...coin, price: snapshot.current_price, lastUpdated: snapshot.last_update }
+            : coin
+        ));
         if (snapshotSymbol !== symbolRef.current) return;
         setCandles(snapshot.candles);
         setTicker((prev) => ({
@@ -230,242 +293,116 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
           lastUpdated: snapshot.last_update,
         }));
       },
-
       onConnectionStateChange: (states) => {
         setBackendConnectionState(states.backend);
         setDeltaConnectionState(states.delta);
       },
-
-      onError: (error) => {
-        console.error('[TradingContext] Backend error:', error);
-      },
+      onError: (error) => console.error('[TradingContext] Market WebSocket error:', error),
     });
 
     service.subscribe(ALL_SYMBOLS);
-
-    service.connect().catch((err) => {
-      console.error('[TradingContext] Failed to connect to backend:', err);
+    service.connect().catch((error) => {
+      console.error('[TradingContext] Backend market connection failed:', error);
       setBackendConnectionState('DISCONNECTED');
       setDeltaConnectionState('DISCONNECTED');
     });
-
-    return () => {
-      service.disconnect();
-    };
+    return () => service.disconnect();
   }, []);
-
-  useEffect(() => {
-    if (backendConnectionState !== 'CONNECTED' || paperStateHydratedRef.current) return;
-
-    paperStateHydratedRef.current = true;
-    void loadPaperState()
-      .then((state) => {
-        setEngineRunningState(Boolean(state.engine_running));
-        setPositions(Array.isArray(state.positions) ? state.positions : []);
-        setClosedTrades(Array.isArray(state.closed_trades) ? state.closed_trades : []);
-        setExecutedSignalIds(Array.isArray(state.executed_signal_ids) ? state.executed_signal_ids : []);
-      })
-      .catch((error) => {
-        paperStateHydratedRef.current = false;
-        console.error('[TradingContext] Failed to restore paper state from database:', error);
-      });
-  }, [backendConnectionState]);
-
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem('DELTA_ALGO_SETTINGS');
-      if (saved) setSettings({ ...DEFAULT_SETTINGS, ...JSON.parse(saved) });
-    } catch {
-      // Keep defaults.
-    }
-  }, []);
-
-  const updateSettings = (newSettings: Partial<TerminalSettings>) => {
-    setSettings((prev) => {
-      const updated = { ...prev, ...newSettings };
-      try {
-        localStorage.setItem('DELTA_ALGO_SETTINGS', JSON.stringify(updated));
-      } catch (err) {
-        console.error('Failed to save settings to localStorage', err);
-      }
-      return updated;
-    });
-  };
 
   const loadSymbolData = useCallback((sym: SymbolKey) => {
     const service = backendServiceRef.current;
     if (!service) return;
-
     service.subscribe([sym]);
     const snapshot = service.getSymbolState(sym);
     if (snapshot) {
       setCandles(snapshot.candles);
-      setTicker(createTicker(sym, snapshot.currentPrice, snapshot.lastTickTime));
+      const existing = watchlist.find((coin) => coin.symbol === sym);
+      setTicker({ ...(existing || createTicker(sym)), price: snapshot.currentPrice, lastUpdated: snapshot.lastTickTime });
     } else {
       setCandles([]);
-      setTicker(createTicker(sym));
+      setTicker(watchlist.find((coin) => coin.symbol === sym) || createTicker(sym));
     }
-  }, []);
+  }, [watchlist]);
 
-  const setSymbol = (sym: SymbolKey) => {
+  const setSymbol = useCallback((sym: SymbolKey) => {
     symbolRef.current = sym;
     setSymbolState(sym);
     loadSymbolData(sym);
-  };
+  }, [loadSymbolData]);
 
-  useEffect(() => {
-    symbolRef.current = symbol;
-    loadSymbolData(symbol);
-  }, [symbol, loadSymbolData]);
+  const setEngineRunning = useCallback((val: boolean) => {
+    setEngineRunningState(val);
+    void setTradingEngine(val)
+      .then((running) => setEngineRunningState(running))
+      .then(() => refreshTradingState())
+      .catch((error) => {
+        console.error('[TradingContext] Failed to change engine state:', error);
+        void refreshTradingState();
+      });
+  }, [refreshTradingState]);
 
-  useEffect(() => {
-    if (dataSource !== 'REAL' || candles.length === 0) {
-      setIndicators(null);
-      return;
-    }
+  const updateSettings = useCallback((newSettings: Partial<TerminalSettings>) => {
+    setSettings((prev) => ({ ...prev, ...newSettings }));
+    void updateTradingSettings(newSettings)
+      .then(() => refreshTradingState())
+      .catch((error) => {
+        console.error('[TradingContext] Failed to update backend settings:', error);
+        void refreshTradingState();
+      });
+  }, [refreshTradingState]);
 
-    const nextIndicators = analyzePriceAction(candles.filter((c) => c.symbol === symbol));
-    setIndicators(nextIndicators);
-
-    if (nextIndicators) {
-      setTicker((prev) => prev ? {
-        ...prev,
-        signalState: nextIndicators.finalBias === 'WAIT' ? 'WATCHING' : 'READY',
-        confidence: nextIndicators.confidence,
-      } : prev);
-
-      setWatchlist((prev) => prev.map((item) =>
-        item.symbol === symbol
-          ? {
-              ...item,
-              signalState: nextIndicators.finalBias === 'WAIT' ? 'WATCHING' : 'READY',
-              confidence: nextIndicators.confidence,
-            }
-          : item
-      ));
-    }
-  }, [candles, symbol, dataSource]);
-
-  const takeTrade = useCallback((signal: AlgoSignal) => {
-    if (signal.status !== 'READY') return;
-    if (!canTrade) {
-      console.error(`[TradingContext] Trade BLOCKED: market data not live (delta: ${deltaConnectionState}, engine: ${isEngineRunning})`);
-      alert(`Cannot take trade: Market data is ${deltaConnectionState}. Real market data required.`);
-      return;
-    }
-
-    if (executedSignalIds.includes(signal.id)) return;
-    if (positions.some((position) => position.symbol === signal.symbol)) return;
-    if (positions.length >= settings.maxConcurrentTrades) return;
-
-    const size = (settings.capital * (settings.riskPerTradePct / 100)) * settings.maxLeverage;
-    const margin = size / settings.maxLeverage;
-
-    const newPosition: PaperPosition = {
-      id: `POS-${Date.now()}`,
-      signalId: signal.id,
-      symbol: signal.symbol,
-      side: signal.side,
-      entryPrice: signal.entry,
-      currentPrice: ticker?.symbol === signal.symbol ? ticker.price : signal.entry,
-      stopLoss: signal.stopLoss,
-      target1: signal.target1,
-      target2: signal.target2,
-      leverage: settings.maxLeverage,
-      size: parseFloat(size.toFixed(2)),
-      margin: parseFloat(margin.toFixed(2)),
-      unrealizedPnL: 0,
-      unrealizedPnLPercent: 0,
-      openedAt: Date.now(),
-    };
-
-    setPositions((prev) => [newPosition, ...prev]);
-    setExecutedSignalIds((prev) => prev.includes(signal.id) ? prev : [signal.id, ...prev]);
-    setSignals((prev) => prev.map((s) => (s.id === signal.id ? { ...s, status: 'EXECUTED' } : s)));
-
-    void Promise.all([
-      savePaperPosition(newPosition),
-      markSignalExecuted(signal.id, signal.symbol),
-    ]).catch((error) => {
-      console.error('[TradingContext] Failed to persist paper trade:', error);
-    });
-  }, [canTrade, deltaConnectionState, isEngineRunning, executedSignalIds, positions, settings, ticker]);
+  const takeTrade = useCallback((_signal: AlgoSignal) => {
+    console.warn('[TradingContext] Manual signal execution is disabled. Backend engine owns all entries.');
+  }, []);
 
   const closePosition = useCallback((positionId: string) => {
-    const pos = positions.find((p) => p.id === positionId);
-    if (!pos) return;
+    void closeTradingPosition(positionId)
+      .then(() => refreshTradingState())
+      .catch((error) => console.error('[TradingContext] Manual backend close failed:', error));
+  }, [refreshTradingState]);
 
-    const now = Date.now();
-    const durationSeconds = Math.floor((now - pos.openedAt) / 1000);
-    const realizedPnL = pos.unrealizedPnL;
-    const realizedPnLPercent = pos.unrealizedPnLPercent;
-
-    const closedRecord: ClosedTrade = {
-      id: `CLOSED-${pos.id}`,
-      symbol: pos.symbol,
-      side: pos.side,
-      entryPrice: pos.entryPrice,
-      exitPrice: pos.currentPrice,
-      size: pos.size,
-      leverage: pos.leverage,
-      realizedPnL,
-      realizedPnLPercent,
-      openedAt: pos.openedAt,
-      closedAt: now,
-      durationSeconds,
-      isWin: realizedPnL > 0,
+  const performanceMetrics = useMemo(() => {
+    const wins = closedTrades.filter((trade) => trade.isWin).length;
+    const totalTrades = closedTrades.length;
+    return {
+      totalTrades,
+      wins,
+      losses: totalTrades - wins,
+      winRate: totalTrades ? Number(((wins / totalTrades) * 100).toFixed(1)) : 0,
+      totalRealizedPnL: Number(closedTrades.reduce((sum, trade) => sum + trade.realizedPnL, 0).toFixed(2)),
     };
-
-    setClosedTrades((prev) => [closedRecord, ...prev]);
-    setPositions((prev) => prev.filter((p) => p.id !== positionId));
-
-    void Promise.all([
-      saveClosedTrade(closedRecord),
-      deletePaperPosition(positionId),
-    ]).catch((error) => {
-      console.error('[TradingContext] Failed to persist closed paper trade:', error);
-    });
-  }, [positions]);
-
-  const performanceMetrics = {
-    totalTrades: closedTrades.length,
-    wins: closedTrades.filter((t) => t.isWin).length,
-    losses: closedTrades.filter((t) => !t.isWin).length,
-    winRate: closedTrades.length > 0
-      ? parseFloat(((closedTrades.filter((t) => t.isWin).length / closedTrades.length) * 100).toFixed(1))
-      : 0,
-    totalRealizedPnL: parseFloat(closedTrades.reduce((acc, curr) => acc + curr.realizedPnL, 0).toFixed(2)),
-  };
+  }, [closedTrades]);
 
   return (
-    <TradingContext.Provider
-      value={{
-        symbol,
-        setSymbol,
-        isEngineRunning,
-        setEngineRunning,
-        autoTradingArmed: isEngineRunning,
-        ticker,
-        watchlist,
-        candles,
-        indicators,
-        signals,
-        positions,
-        closedTrades,
-        executedSignalIds,
-        settings,
-        updateSettings,
-        takeTrade,
-        closePosition,
-        performanceMetrics,
-        backendConnectionState,
-        deltaConnectionState,
-        dataSource,
-        isMarketDataLive,
-        isMarketDataStale,
-        canTrade,
-      }}
-    >
+    <TradingContext.Provider value={{
+      symbol,
+      setSymbol,
+      isEngineRunning,
+      setEngineRunning,
+      autoTradingArmed: isEngineRunning,
+      ticker,
+      watchlist,
+      candles,
+      indicators,
+      analyses,
+      selectedAnalysis,
+      signals,
+      positions,
+      closedTrades,
+      executedSignalIds,
+      riskSnapshot,
+      settings,
+      updateSettings,
+      takeTrade,
+      closePosition,
+      performanceMetrics,
+      backendConnectionState,
+      deltaConnectionState,
+      dataSource,
+      isMarketDataLive,
+      isMarketDataStale,
+      canTrade,
+    }}>
       {children}
     </TradingContext.Provider>
   );
