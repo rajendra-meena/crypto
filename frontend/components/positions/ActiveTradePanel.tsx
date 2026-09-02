@@ -17,7 +17,7 @@ export const ActiveTradePanel: React.FC = () => {
     return (
       <div className="bg-zinc-950 border border-zinc-800/80 rounded-2xl p-5 text-center">
         <h3 className="font-bold text-zinc-100 text-base mb-1">Active Positions (Paper)</h3>
-        <p className="text-xs text-zinc-400">No open positions. Backend MTF strategy is scanning all supported coins.</p>
+        <p className="text-xs text-zinc-400">No open positions. Backend MTPA strategy is scanning all supported coins.</p>
       </div>
     );
   }
@@ -38,9 +38,9 @@ export const ActiveTradePanel: React.FC = () => {
               <th className="pb-3 px-3">Notional</th>
               <th className="pb-3 px-3">Entry</th>
               <th className="pb-3 px-3">Current</th>
-              <th className="pb-3 px-3">SL / TP</th>
+              <th className="pb-3 px-3">SL / Target</th>
               <th className="pb-3 px-3">R</th>
-              <th className="pb-3 px-3">Stage</th>
+              <th className="pb-3 px-3">Management</th>
               <th className="pb-3 px-3">Net Est. P&L</th>
               <th className="pb-3 px-3 text-right">Action</th>
             </tr>
@@ -48,6 +48,7 @@ export const ActiveTradePanel: React.FC = () => {
           <tbody className="divide-y divide-zinc-900 font-mono">
             {positions.map((pos) => {
               const isProfit = pos.unrealizedPnL >= 0;
+              const stage = pos.trailingActivated ? 'TRAILING' : pos.breakEvenActivated ? 'BREAKEVEN' : 'INITIAL';
               return (
                 <tr key={pos.id} className="hover:bg-zinc-900/40 transition">
                   <td className="py-3 px-3 font-sans font-bold text-zinc-200">{pos.symbol}</td>
@@ -57,7 +58,7 @@ export const ActiveTradePanel: React.FC = () => {
                   <td className="py-3 px-3 font-bold text-zinc-100">${pos.currentPrice}</td>
                   <td className="py-3 px-3 text-zinc-400"><span className="text-rose-400">${pos.stopLoss}</span> / <span className="text-emerald-400">${pos.target1}</span></td>
                   <td className={`py-3 px-3 font-bold ${(pos.rMultiple || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>{Number(pos.rMultiple || 0).toFixed(2)}R</td>
-                  <td className="py-3 px-3 text-zinc-300">{pos.managementStage || 'INITIAL'}</td>
+                  <td className="py-3 px-3"><span className={`px-2 py-0.5 rounded text-[10px] ${stage === 'TRAILING' ? 'bg-cyan-950 text-cyan-300' : stage === 'BREAKEVEN' ? 'bg-emerald-950 text-emerald-300' : 'bg-zinc-900 text-zinc-400'}`}>{stage}</span></td>
                   <td className={`py-3 px-3 font-bold ${isProfit ? 'text-emerald-400' : 'text-rose-400'}`}>{isProfit ? `+$${pos.unrealizedPnL}` : `-$${Math.abs(pos.unrealizedPnL)}`}</td>
                   <td className="py-3 px-3 text-right">
                     <button disabled={closingId === pos.id} onClick={() => handleClose(pos.id)} className="px-2.5 py-1 bg-zinc-900 hover:bg-rose-950 border border-zinc-700 hover:border-rose-700 disabled:opacity-50 text-zinc-300 hover:text-rose-300 rounded font-medium text-xs transition">
