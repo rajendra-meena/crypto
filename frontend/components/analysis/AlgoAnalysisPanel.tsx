@@ -12,7 +12,7 @@ export const AlgoAnalysisPanel: React.FC = () => {
       <div className="bg-zinc-950 border border-zinc-800/80 rounded-2xl p-5 flex items-center justify-center min-h-[360px]">
         <div className="text-center text-zinc-400">
           <Cpu className="h-10 w-10 mx-auto mb-3 opacity-50" />
-          <p>Waiting for backend multi-timeframe analysis</p>
+          <p>Waiting for backend PA MTF V4 analysis</p>
         </div>
       </div>
     );
@@ -39,8 +39,8 @@ export const AlgoAnalysisPanel: React.FC = () => {
           <div className="flex items-center gap-2">
             <Cpu className="h-5 w-5 text-emerald-400" />
             <div>
-              <h3 className="font-bold text-zinc-100 text-sm tracking-wide uppercase">MTPA 3TF Engine</h3>
-              <p className="text-[10px] text-zinc-500 mt-0.5">15m regime → 5m trend → completed 1m breakout</p>
+              <h3 className="font-bold text-zinc-100 text-sm tracking-wide uppercase">PA MTF V4 Engine</h3>
+              <p className="text-[10px] text-zinc-500 mt-0.5">15m regime → 5m trend → completed 1m breakout / pullback trigger</p>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -55,7 +55,8 @@ export const AlgoAnalysisPanel: React.FC = () => {
 
         <div className="space-y-2 text-xs">
           <div className="flex justify-between py-1 border-b border-zinc-900"><span className="text-zinc-400">15m Market Regime</span><span className="font-semibold text-zinc-200">{selectedAnalysis.trend}</span></div>
-          <div className="flex justify-between py-1 border-b border-zinc-900"><span className="text-zinc-400">5m Trend Alignment</span><span className="font-semibold text-zinc-200">{selectedAnalysis.mtfTrend || 'NEUTRAL'}</span></div>
+          <div className="flex justify-between py-1 border-b border-zinc-900"><span className="text-zinc-400">5m Trend</span><span className="font-semibold text-zinc-200">{selectedAnalysis.mtfTrend || 'NEUTRAL'}</span></div>
+          <div className="flex justify-between py-1 border-b border-zinc-900"><span className="text-zinc-400">Setup</span><span className="font-semibold text-zinc-200">{selectedAnalysis.setup.replace(/_/g, ' ')}</span></div>
           <div className="flex justify-between py-1 border-b border-zinc-900"><span className="text-zinc-400">1m Completed Trigger</span><span className="font-semibold text-zinc-200">{selectedAnalysis.trigger.replace(/_/g, ' ')}</span></div>
           <div className="flex justify-between py-1 border-b border-zinc-900"><span className="text-zinc-400">RSI (5m)</span><span className="font-mono text-zinc-200">{selectedAnalysis.rsi}</span></div>
           <div className="flex justify-between py-1 border-b border-zinc-900"><span className="text-zinc-400">ATR % (5m)</span><span className="font-mono text-zinc-200">{selectedAnalysis.atrPct}%</span></div>
@@ -65,13 +66,11 @@ export const AlgoAnalysisPanel: React.FC = () => {
           <div className="flex justify-between py-1 border-b border-zinc-900"><span className="text-zinc-400">Backend Status</span><span className={`font-bold ${statusClass}`}>{selectedAnalysis.status}</span></div>
         </div>
 
-        <div className="mt-4 rounded-lg bg-zinc-900/60 border border-zinc-800 px-3 py-2 text-[11px] text-zinc-400 leading-relaxed">
-          {selectedAnalysis.reason}
-        </div>
+        <div className="mt-4 rounded-lg bg-zinc-900/60 border border-zinc-800 px-3 py-2 text-[11px] text-zinc-400 leading-relaxed">{selectedAnalysis.reason}</div>
 
         <div className="mt-3">
           {blockers.length === 0 ? (
-            <div className="flex items-center gap-1.5 text-[11px] text-emerald-400"><CheckCircle2 className="h-3.5 w-3.5" /> No hard strategy blockers on the latest completed trigger candle.</div>
+            <div className="flex items-center gap-1.5 text-[11px] text-emerald-400"><CheckCircle2 className="h-3.5 w-3.5" /> No hard blocker on the latest completed candle.</div>
           ) : (
             <div className="flex flex-wrap gap-1.5">
               {blockers.map((blocker) => (
@@ -90,7 +89,7 @@ export const AlgoAnalysisPanel: React.FC = () => {
         <div className="text-right">
           <div className="text-[11px] text-zinc-400 uppercase font-bold tracking-wider mb-1">Setup Score</div>
           <div className="font-mono text-lg font-extrabold text-emerald-400">{selectedAnalysis.setupScore}/100</div>
-          <div className="text-[10px] text-zinc-500 mt-1">Not a win-probability percentage</div>
+          <div className="text-[10px] text-zinc-500 mt-1">Strategy quality score, not win probability</div>
         </div>
       </div>
     </div>
