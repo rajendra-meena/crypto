@@ -12,10 +12,13 @@ export const SignalSection: React.FC = () => {
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-2">
           <Zap className="h-5 w-5 text-amber-400" />
-          <h3 className="font-bold text-zinc-100 text-base">Algo Trading Signals</h3>
+          <div>
+            <h3 className="font-bold text-zinc-100 text-base">Algo Trading Signals</h3>
+            <p className="text-[10px] text-zinc-500 mt-0.5">Only backend-confirmed completed-candle setups appear here</p>
+          </div>
         </div>
         <span className="text-xs text-zinc-400">
-          MTF Price Action · backend authoritative · {isEngineRunning ? 'SCANNING' : 'ENGINE OFF'}
+          MTPA 3TF · backend authoritative · {isEngineRunning ? 'SCANNING' : 'ENGINE OFF'}
         </span>
       </div>
 
@@ -37,6 +40,7 @@ export const SignalSection: React.FC = () => {
               <th className="pb-3 px-3">Target</th>
               <th className="pb-3 px-3">R:R</th>
               <th className="pb-3 px-3">Setup Score</th>
+              <th className="pb-3 px-3">Trigger Time</th>
               <th className="pb-3 px-3">Reason</th>
               <th className="pb-3 px-3">Status</th>
               <th className="pb-3 px-3 text-right">Execution</th>
@@ -45,6 +49,7 @@ export const SignalSection: React.FC = () => {
           <tbody className="divide-y divide-zinc-900 font-mono">
             {signals.map((sig) => {
               const isBuy = sig.side === 'BUY';
+              const score = sig.setupScore ?? sig.confidence;
               const statusClass = sig.status === 'EXECUTED'
                 ? 'bg-blue-950 text-blue-400 border-blue-800'
                 : sig.status === 'READY'
@@ -66,7 +71,8 @@ export const SignalSection: React.FC = () => {
                   <td className="py-3 px-3 text-rose-400">${sig.stopLoss}</td>
                   <td className="py-3 px-3 text-emerald-400">${sig.target1}</td>
                   <td className="py-3 px-3 text-zinc-300">{sig.riskReward}</td>
-                  <td className="py-3 px-3 font-bold text-zinc-100">{sig.confidence}%</td>
+                  <td className="py-3 px-3 font-bold text-zinc-100">{score}/100</td>
+                  <td className="py-3 px-3 text-zinc-400 text-[11px] whitespace-nowrap">{sig.generatedTime}</td>
                   <td className="py-3 px-3 text-zinc-500 text-[11px] max-w-[360px] truncate" title={sig.reason}>{sig.reason}</td>
                   <td className="py-3 px-3"><span className={`px-2 py-0.5 rounded border text-[10px] font-bold ${statusClass}`}>{sig.status}</span></td>
                   <td className="py-3 px-3 text-right text-xs">
@@ -79,8 +85,8 @@ export const SignalSection: React.FC = () => {
             })}
             {signals.length === 0 && (
               <tr>
-                <td colSpan={11} className="py-8 text-center text-zinc-500 font-sans">
-                  No confirmed multi-timeframe setup. Backend is scanning 15m trend → 5m setup → 1m trigger.
+                <td colSpan={12} className="py-8 text-center text-zinc-500 font-sans">
+                  No confirmed setup. Backend is waiting for 15m regime + 5m alignment + completed 1m breakout confirmation.
                 </td>
               </tr>
             )}
