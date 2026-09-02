@@ -7,34 +7,28 @@ from pydantic import BaseModel
 from app.core.database import paper_db
 from app.services.strategy_engine import DEFAULT_TRADING_SETTINGS
 
-
 router = APIRouter(prefix="/api/trading", tags=["trading"])
 market_data_service = None
 algo_engine = None
 
-
 class EngineStateRequest(BaseModel):
     running: bool
 
-
 class TradingSettingsRequest(BaseModel):
     settings: Dict[str, Any]
-
 
 def _require_engine():
     if algo_engine is None:
         raise HTTPException(status_code=503, detail="Algo engine unavailable")
     return algo_engine
 
-
 def _validated_settings(payload: Dict[str, Any]) -> Dict[str, Any]:
     current = dict(DEFAULT_TRADING_SETTINGS)
     saved = paper_db.get_trading_settings()
     if "minConfidence" in saved and "minSetupScore" not in saved:
         saved = {**saved, "minSetupScore": saved["minConfidence"]}
-    current.update({key: value for key, value in saved.items() if key in current})
-    current.update({key: value for key, value in payload.items() if key in current})
-
+    current.update({k: v for k, v in saved.items() if k in current})
+    current.update({k: v for k, v in payload.items() if k in current})
     current["capital"] = max(100.0, float(current["capital"]))
     current["riskPerTradePct"] = min(3.0, max(0.1, float(current["riskPerTradePct"])))
     current["maxDailyLossPct"] = min(10.0, max(0.5, float(current["maxDailyLossPct"])))
@@ -48,21 +42,21 @@ def _validated_settings(payload: Dict[str, Any]) -> Dict[str, Any]:
     current["cooldownMinutes"] = min(1440.0, max(0.0, float(current["cooldownMinutes"])))
     current["atrStopMultiplier"] = min(5.0, max(0.5, float(current["atrStopMultiplier"])))
     current["minStopPct"] = min(3.0, max(0.05, float(current["minStopPct"])))
-    current["maxStopPct"] = min(10.0, max(current["minStopPct"], float(current["maxStopPct"])))
+    current["maxStopPct"] = min(10.0, max(float(current["minStopPct"]), float(current["maxStopPct"])))
     current["targetRR"] = min(5.0, max(1.0, float(current["targetRR"])))
     current["breakevenAtR"] = min(3.0, max(0.5, float(current["breakevenAtR"])))
-    current["trailingStartR"] = min(5.0, max(current["breakevenAtR"], float(current["trailingStartR"])))
+    current["trailingStartR"] = min(5.0, max(float(current["breakevenAtR"]), float(current["trailingStartR"])))
     current["trailingDistanceR"] = min(3.0, max(0.25, float(current["trailingDistanceR"])))
     current["maxHoldMinutes"] = min(1440.0, max(5.0, float(current["maxHoldMinutes"])))
     current["minAtrPct"] = min(5.0, max(0.0, float(current["minAtrPct"])))
-    current["maxAtrPct"] = min(20.0, max(current["minAtrPct"], float(current["maxAtrPct"])))
+    current["maxAtrPct"] = min(20.0, max(float(current["minAtrPct"]), float(current["maxAtrPct"])))
     current["minVolumeRatio"] = min(5.0, max(0.0, float(current["minVolumeRatio"])))
     current["btcTrendFilter"] = bool(current["btcTrendFilter"])
     current["feeRatePct"] = min(1.0, max(0.0, float(current["feeRatePct"])))
     current["slippagePct"] = min(1.0, max(0.0, float(current["slippagePct"])))
     current["maxEntryDriftPct"] = min(3.0, max(0.05, float(current["maxEntryDriftPct"])))
+    current["signalRetentionMinutes"] = min(120.0, max(1.0, float(current["signalRetentionMinutes"])))
     return current
-
 
 def _decorate_risk(risk: Dict[str, Any], settings: Dict[str, Any]) -> Dict[str, Any]:
     reason = None
@@ -76,10 +70,7 @@ def _decorate_risk(risk: Dict[str, Any], settings: Dict[str, Any]) -> Dict[str, 
         reason = "MAX_CONCURRENT_TRADES"
     elif float(risk.get("openRisk", 0.0)) >= float(risk.get("maxPortfolioRisk", 0.0)) and float(risk.get("maxPortfolioRisk", 0.0)) > 0:
         reason = "MAX_PORTFOLIO_RISK"
-    elif float(risk.get("openNotional", 0.0)) >= float(risk.get("maxPortfolioNotional", 0.0)) and float(risk.get("maxPortfolioNotional", 0.0)) > 0:
-        reason = "MAX_PORTFOLIO_NOTIONAL"
     return {**risk, "blocked": reason is not None, "blockReason": reason}
-
 
 @router.get("/state")
 async def get_state():
@@ -88,78 +79,59 @@ async def get_state():
     state["risk"] = _decorate_risk(state.get("risk", {}), state.get("settings", engine.get_settings()))
     return state
 
-
 @router.get("/signals")
 async def get_signals():
     engine = _require_engine()
     return {"strategy": engine.STRATEGY_VERSION, "signals": engine.get_signals()}
-
 
 @router.get("/analysis")
 async def get_analysis():
     engine = _require_engine()
     return {"strategy": engine.STRATEGY_VERSION, "analyses": engine.get_analyses()}
 
-
 @router.get("/analysis/{symbol}")
 async def get_symbol_analysis(symbol: str):
-    engine = _require_engine()
-    normalized = symbol.upper()
+    engine = _require_engine(); normalized = symbol.upper()
     if market_data_service is None or normalized not in market_data_service.symbol_states:
         raise HTTPException(status_code=404, detail="Symbol not available")
     analysis = engine.analyses.get(normalized) or engine.analyze_symbol(normalized)
     engine.analyses[normalized] = analysis
     return analysis
 
+@router.get("/diagnostics")
+async def get_diagnostics():
+    engine = _require_engine()
+    return {"strategy": engine.STRATEGY_VERSION, "engine_running": paper_db.get_engine_running(), "risk": _decorate_risk(engine.get_risk_snapshot(), engine.get_settings()), "analyses": engine.get_analyses(), "signals": engine.get_signals()}
+
+@router.post("/scan")
+async def scan_now():
+    engine = _require_engine(); await engine.scan_all_symbols()
+    return {"scanned": True, "lastScan": engine.last_scan_ms, "analyses": engine.get_analyses(), "signals": engine.get_signals()}
 
 @router.get("/positions")
 async def get_positions():
     return {"positions": list(_require_engine().positions_by_symbol.values())}
 
-
 @router.get("/trades")
 async def get_trades(limit: int = 200):
-    safe_limit = min(1000, max(1, int(limit)))
-    return {"trades": paper_db.list_closed_trades(safe_limit)}
-
+    return {"trades": paper_db.list_closed_trades(min(1000, max(1, int(limit))))}
 
 @router.get("/risk")
 async def get_risk():
-    engine = _require_engine()
-    return _decorate_risk(engine.get_risk_snapshot(), engine.get_settings())
-
+    engine = _require_engine(); return _decorate_risk(engine.get_risk_snapshot(), engine.get_settings())
 
 @router.put("/engine")
 async def set_engine_state(request: EngineStateRequest):
-    engine = _require_engine()
-    paper_db.set_engine_running(request.running, int(time.time() * 1000))
-    if request.running:
-        # A valid completed-candle setup may have been seen while the engine was
-        # OFF. Clear evaluation cache so it is immediately reconsidered using
-        # current drift/risk guards. Executed-signal IDs still prevent duplicates.
-        engine.last_evaluation_key.clear()
-        await engine.scan_all_symbols()
-    return {
-        "engine_running": paper_db.get_engine_running(),
-        "mode": "PAPER_ONLY",
-        "message": "Paper auto-execution armed" if request.running else "Paper auto-execution stopped",
-    }
-
+    engine = _require_engine(); paper_db.set_engine_running(request.running, int(time.time() * 1000))
+    if request.running: await engine.scan_all_symbols()
+    return {"engine_running": paper_db.get_engine_running(), "mode": "PAPER_ONLY", "message": "Paper auto-execution armed" if request.running else "Paper auto-execution stopped"}
 
 @router.put("/settings")
 async def update_settings(request: TradingSettingsRequest):
-    engine = _require_engine()
-    settings = _validated_settings(request.settings)
-    paper_db.set_trading_settings(settings, int(time.time() * 1000))
-    # Re-evaluate current completed setup against changed thresholds immediately.
-    engine.last_evaluation_key.clear()
-    await engine.scan_all_symbols()
-    return {"settings": settings}
-
+    settings = _validated_settings(request.settings); paper_db.set_trading_settings(settings, int(time.time() * 1000)); return {"settings": settings}
 
 @router.post("/positions/{position_id}/close")
 async def close_position(position_id: str):
     trade = _require_engine().close_position_manually(position_id)
-    if trade is None:
-        raise HTTPException(status_code=404, detail="Position not found or current market price unavailable")
+    if trade is None: raise HTTPException(status_code=404, detail="Position not found or current market price unavailable")
     return {"closed": True, "trade": trade}
