@@ -54,6 +54,7 @@ type ErrorCallback = (error: string) => void;
 export class BackendMarketService {
   private ws: WebSocket | null = null;
   private url: string;
+  private apiBaseUrl: string;
   private subscribedSymbols: Set<string> = new Set();
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 10;
@@ -81,6 +82,7 @@ export class BackendMarketService {
   }> = new Map();
 
   constructor() {
+    this.apiBaseUrl = (process.env.NEXT_PUBLIC_BACKEND_API_URL || 'http://localhost:8000').replace(/\/$/, '');
     this.url = process.env.NEXT_PUBLIC_BACKEND_WS_URL || 'ws://localhost:8000/ws/market';
   }
 
@@ -101,9 +103,9 @@ export class BackendMarketService {
   // Fetch health from backend REST endpoint
   async fetchHealth(): Promise<void> {
     try {
-      const response = await fetch('http://localhost:8000/health');
+      const response = await fetch(`${this.apiBaseUrl}/health`, { cache: 'no-store' });
       if (!response.ok) return;
-      const health = await response.json();
+      const health: HealthResponse = await response.json();
       this._updateDeltaState(health.delta_connection_state);
       
       // Update per-symbol delta connection states
