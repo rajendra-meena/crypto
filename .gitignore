@@ -1,0 +1,27 @@
+# See https://github.com/github/gitignore/blob/main/Node.gitignore
+node_modules/
+
+# See https://github.com/github/gitignore/blob/main/VisualStudio.gitignore
+*.suo
+*.user
+*.sln
+*.ide
+
+# Next.js
+.next/
+out/
+
+# Tailwind
+*.local.js
+
+# Environment variables
+.env*
+!.env.example
+
+# TypeScript
+*.tsbuildinfo
+tsconfig.tsbuildinfo
+
+# OS
+.DS_Store
+Thumbs.db
