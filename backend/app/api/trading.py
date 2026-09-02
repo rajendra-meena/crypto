@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from app.core.database import paper_db
-from app.services.crypto_algo_engine import DEFAULT_TRADING_SETTINGS
+from app.services.strategy_engine import DEFAULT_TRADING_SETTINGS
 
 
 router = APIRouter(prefix="/api/trading", tags=["trading"])
@@ -76,6 +76,8 @@ def _decorate_risk(risk: Dict[str, Any], settings: Dict[str, Any]) -> Dict[str, 
         reason = "MAX_CONCURRENT_TRADES"
     elif float(risk.get("openRisk", 0.0)) >= float(risk.get("maxPortfolioRisk", 0.0)) and float(risk.get("maxPortfolioRisk", 0.0)) > 0:
         reason = "MAX_PORTFOLIO_RISK"
+    elif float(risk.get("openNotional", 0.0)) >= float(risk.get("maxPortfolioNotional", 0.0)) and float(risk.get("maxPortfolioNotional", 0.0)) > 0:
+        reason = "MAX_PORTFOLIO_NOTIONAL"
     return {**risk, "blocked": reason is not None, "blockReason": reason}
 
 
