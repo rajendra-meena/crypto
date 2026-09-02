@@ -46,6 +46,12 @@ export async function saveTradingSettings(settings: Partial<TerminalSettings> & 
   });
 }
 
+export async function closePaperPosition(positionId: string): Promise<void> {
+  await request(`/api/paper/positions/${encodeURIComponent(positionId)}/close`, {
+    method: 'POST',
+  });
+}
+
 export async function savePaperPosition(position: PaperPosition): Promise<void> {
   await request(`/api/paper/positions/${encodeURIComponent(position.id)}`, {
     method: 'PUT',
