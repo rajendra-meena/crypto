@@ -2,7 +2,7 @@ import json
 import sqlite3
 import threading
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from app.core.config import get_settings
 
@@ -77,7 +77,7 @@ class PaperTradingDatabase:
         symbol = str(position["symbol"])
         signal_id = position.get("signalId")
         created_at = int(position.get("openedAt") or 0)
-        updated_at = int(position.get("lastUpdated") or created_at)
+        updated_at = int(position.get("lastUpdated") or int(__import__('time').time() * 1000))
         payload = json.dumps(position, separators=(",", ":"))
 
         with self._lock, self._connect() as conn:
@@ -107,6 +107,22 @@ class PaperTradingDatabase:
                 (limit,),
             ).fetchall()
         return [json.loads(row["payload"]) for row in rows]
+
+    def list_closed_trades_since(self, start_ms: int, limit: int = 1000) -> List[Dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT payload FROM paper_closed_trades WHERE closed_at >= ? ORDER BY closed_at DESC LIMIT ?",
+                (start_ms, limit),
+            ).fetchall()
+        return [json.loads(row["payload"]) for row in rows]
+
+    def get_last_closed_trade(self, symbol: str) -> Optional[Dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT payload FROM paper_closed_trades WHERE symbol = ? ORDER BY closed_at DESC LIMIT 1",
+                (symbol,),
+            ).fetchone()
+        return json.loads(row["payload"]) if row else None
 
     def save_closed_trade(self, trade: Dict[str, Any]) -> None:
         trade_id = str(trade["id"])
@@ -150,28 +166,44 @@ class PaperTradingDatabase:
             )
             conn.commit()
 
-    def get_engine_running(self) -> bool:
+    def _get_state(self, key: str) -> Optional[str]:
         with self._lock, self._connect() as conn:
-            row = conn.execute(
-                "SELECT value FROM app_state WHERE key = 'engine_running'"
-            ).fetchone()
-        if not row:
-            return False
-        return str(row["value"]).lower() == "true"
+            row = conn.execute("SELECT value FROM app_state WHERE key = ?", (key,)).fetchone()
+        return str(row["value"]) if row else None
 
-    def set_engine_running(self, running: bool, updated_at: int) -> None:
+    def _set_state(self, key: str, value: str, updated_at: int) -> None:
         with self._lock, self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO app_state(key, value, updated_at)
-                VALUES ('engine_running', ?, ?)
+                VALUES (?, ?, ?)
                 ON CONFLICT(key) DO UPDATE SET
                     value=excluded.value,
                     updated_at=excluded.updated_at
                 """,
-                ("true" if running else "false", updated_at),
+                (key, value, updated_at),
             )
             conn.commit()
+
+    def get_engine_running(self) -> bool:
+        value = self._get_state("engine_running")
+        return bool(value and value.lower() == "true")
+
+    def set_engine_running(self, running: bool, updated_at: int) -> None:
+        self._set_state("engine_running", "true" if running else "false", updated_at)
+
+    def get_trading_settings(self) -> Dict[str, Any]:
+        value = self._get_state("trading_settings")
+        if not value:
+            return {}
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+
+    def set_trading_settings(self, settings: Dict[str, Any], updated_at: int) -> None:
+        self._set_state("trading_settings", json.dumps(settings, separators=(",", ":")), updated_at)
 
 
 paper_db = PaperTradingDatabase()
