@@ -134,6 +134,10 @@ async def set_engine_state(request: EngineStateRequest):
     engine = _require_engine()
     paper_db.set_engine_running(request.running, int(time.time() * 1000))
     if request.running:
+        # A valid completed-candle setup may have been seen while the engine was
+        # OFF. Clear evaluation cache so it is immediately reconsidered using
+        # current drift/risk guards. Executed-signal IDs still prevent duplicates.
+        engine.last_evaluation_key.clear()
         await engine.scan_all_symbols()
     return {
         "engine_running": paper_db.get_engine_running(),
@@ -144,8 +148,12 @@ async def set_engine_state(request: EngineStateRequest):
 
 @router.put("/settings")
 async def update_settings(request: TradingSettingsRequest):
+    engine = _require_engine()
     settings = _validated_settings(request.settings)
     paper_db.set_trading_settings(settings, int(time.time() * 1000))
+    # Re-evaluate current completed setup against changed thresholds immediately.
+    engine.last_evaluation_key.clear()
+    await engine.scan_all_symbols()
     return {"settings": settings}
 
 
