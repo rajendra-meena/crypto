@@ -1,12 +1,114 @@
 'use client';
 
-import React from 'react';
+import React, { useEffect, useMemo, useRef } from 'react';
 import { useTrading } from '@/context/TradingContext';
 import { ArrowUpRight, ArrowDownRight, Zap } from 'lucide-react';
-import { AlgoSignal } from '@/types/trading';
+import { AlgoSignal, Candle } from '@/types/trading';
+
+const roundPrice = (value: number) => {
+  if (value < 10) return Number(value.toFixed(4));
+  if (value < 100) return Number(value.toFixed(3));
+  return Number(value.toFixed(2));
+};
+
+const getAnalysisSeries = (candles: Candle[]) => {
+  for (const timeframe of ['15m', '5m', '1m']) {
+    const series = candles
+      .filter((c) => c.timeframe === timeframe)
+      .sort((a, b) => a.time - b.time);
+    if (series.length >= 20) return { timeframe, series };
+  }
+
+  const series = [...candles].sort((a, b) => a.time - b.time);
+  return { timeframe: series.at(-1)?.timeframe || '1m', series };
+};
 
 export const SignalSection: React.FC = () => {
-  const { signals, takeTrade } = useTrading();
+  const {
+    signals,
+    takeTrade,
+    symbol,
+    ticker,
+    candles,
+    indicators,
+    positions,
+    settings,
+    canTrade,
+  } = useTrading();
+
+  const lastAutoExecutedSignalRef = useRef<string | null>(null);
+
+  const priceActionSignal = useMemo<AlgoSignal | null>(() => {
+    if (!indicators || !ticker || ticker.price <= 0 || indicators.finalBias === 'WAIT') return null;
+
+    const symbolCandles = candles.filter((c) => c.symbol === symbol);
+    const { timeframe, series } = getAnalysisSeries(symbolCandles);
+    const latest = series.at(-1);
+    if (!latest) return null;
+
+    const entry = ticker.price;
+    const isBuy = indicators.finalBias === 'BUY';
+
+    // Structure-first stop with a bounded fallback so an old distant swing does not
+    // create an excessively wide paper-trading stop.
+    const structureRisk = isBuy
+      ? entry - indicators.support
+      : indicators.resistance - entry;
+    const minRisk = entry * 0.003;
+    const maxRisk = entry * 0.015;
+    const risk = Math.min(maxRisk, Math.max(minRisk, structureRisk > 0 ? structureRisk : minRisk));
+
+    const stopLoss = isBuy ? entry - risk : entry + risk;
+    const target1 = isBuy ? entry + risk * 1.5 : entry - risk * 1.5;
+    const target2 = isBuy ? entry + risk * 2.5 : entry - risk * 2.5;
+
+    const reasonParts = [
+      indicators.marketStructure.replace(/_/g, ' '),
+      indicators.marketTrend.replace(/_/g, ' '),
+      `${indicators.momentum.toLowerCase()} momentum`,
+    ];
+
+    return {
+      id: `PA-${symbol}-${timeframe}-${latest.time}-${indicators.finalBias}`,
+      symbol,
+      side: indicators.finalBias,
+      timeframe,
+      entry: roundPrice(entry),
+      stopLoss: roundPrice(stopLoss),
+      target1: roundPrice(target1),
+      target2: roundPrice(target2),
+      riskReward: '1:2.5',
+      confidence: indicators.confidence,
+      generatedTime: new Date(latest.time).toLocaleTimeString(),
+      reason: `Price action: ${reasonParts.join(' · ')}`,
+      status: 'READY',
+    };
+  }, [indicators, ticker, candles, symbol]);
+
+  useEffect(() => {
+    if (!priceActionSignal) return;
+
+    // Auto execution is intentionally restricted to paper mode.
+    if (settings.isLiveMode) return;
+    if (!canTrade) return;
+    if (positions.length >= settings.maxConcurrentTrades) return;
+    if (positions.some((position) => position.symbol === priceActionSignal.symbol)) return;
+    if (lastAutoExecutedSignalRef.current === priceActionSignal.id) return;
+
+    lastAutoExecutedSignalRef.current = priceActionSignal.id;
+    takeTrade(priceActionSignal);
+  }, [priceActionSignal, settings.isLiveMode, settings.maxConcurrentTrades, canTrade, positions, takeTrade]);
+
+  const visibleSignals = useMemo(() => {
+    if (!priceActionSignal) return signals;
+
+    const executedPosition = positions.find((position) => position.signalId === priceActionSignal.id);
+    const liveSignal: AlgoSignal = executedPosition
+      ? { ...priceActionSignal, status: 'EXECUTED' }
+      : priceActionSignal;
+
+    return [liveSignal, ...signals.filter((signal) => signal.id !== liveSignal.id)].slice(0, 20);
+  }, [priceActionSignal, signals, positions]);
 
   return (
     <div className="bg-zinc-950 border border-zinc-800/80 rounded-2xl p-5">
@@ -15,7 +117,9 @@ export const SignalSection: React.FC = () => {
           <Zap className="h-5 w-5 text-amber-400" />
           <h3 className="font-bold text-zinc-100 text-base">Algo Trading Signals</h3>
         </div>
-        <span className="text-xs text-zinc-400">Continuous 24/7 Analysis</span>
+        <span className="text-xs text-zinc-400">
+          {settings.isLiveMode ? 'Live mode · manual execution only' : 'Paper mode · auto execution'}
+        </span>
       </div>
 
       <div className="overflow-x-auto">
@@ -37,7 +141,7 @@ export const SignalSection: React.FC = () => {
             </tr>
           </thead>
           <tbody className="divide-y divide-zinc-900 font-mono">
-            {signals.map((sig) => {
+            {visibleSignals.map((sig) => {
               const isBuy = sig.side === 'BUY';
               const isReady = sig.status === 'READY';
 
@@ -63,7 +167,7 @@ export const SignalSection: React.FC = () => {
                   <td className="py-3 px-3 text-zinc-300">{sig.riskReward}</td>
                   <td className="py-3 px-3 font-bold text-zinc-200">{sig.confidence}%</td>
                   <td className="py-3 px-3 text-zinc-400 font-mono text-[11px]">{sig.generatedTime}</td>
-                  <td className="py-3 px-3 text-zinc-500 text-[11px] max-w-[200px] truncate" title={sig.reason}>
+                  <td className="py-3 px-3 text-zinc-500 text-[11px] max-w-[220px] truncate" title={sig.reason}>
                     {sig.reason}
                   </td>
                   <td className="py-3 px-3">
@@ -81,12 +185,18 @@ export const SignalSection: React.FC = () => {
                   </td>
                   <td className="py-3 px-3 text-right">
                     {isReady ? (
-                      <button
-                        onClick={() => takeTrade(sig)}
-                        className="px-3 py-1 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-bold rounded-lg transition-all shadow-md shadow-emerald-500/10 text-xs"
-                      >
-                        Take Trade
-                      </button>
+                      settings.isLiveMode ? (
+                        <button
+                          onClick={() => takeTrade(sig)}
+                          className="px-3 py-1 bg-emerald-500 hover:bg-emerald-400 text-zinc-950 font-bold rounded-lg transition-all shadow-md shadow-emerald-500/10 text-xs"
+                        >
+                          Take Trade
+                        </button>
+                      ) : canTrade ? (
+                        <span className="text-emerald-400 font-sans text-xs">AUTO</span>
+                      ) : (
+                        <span className="text-amber-400 font-sans text-xs">WAITING</span>
+                      )
                     ) : (
                       <span className="text-zinc-600 font-sans text-xs">--</span>
                     )}
