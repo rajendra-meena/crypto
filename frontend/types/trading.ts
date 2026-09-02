@@ -37,7 +37,7 @@ export interface MarketTick {
   volume?: number;
 }
 
-// Kept for chart/component compatibility. Trading decisions do NOT use this frontend type.
+// Compatibility type for chart/legacy presentation only. Strategy decisions are backend-only.
 export interface TechnicalIndicators {
   rsi: number;
   macd: { macdLine: number; signalLine: number; histogram: number };
@@ -60,17 +60,21 @@ export interface BackendAnalysis {
   setupScore: number;
   timeframe: string;
   trend: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+  mtfTrend?: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
   setup: 'BREAKOUT' | 'BREAKDOWN' | 'PULLBACK_RECLAIM' | 'PULLBACK_REJECT' | 'NONE';
   trigger: 'LONG_CONFIRM' | 'SHORT_CONFIRM' | 'NONE';
   rsi: number;
   atrPct: number;
   volumeRatio: number;
+  bodyQuality?: number;
   support: number;
   resistance: number;
+  blockers?: string[];
   reason: string;
   updatedAt: number;
-  setupCandleTime?: number;
+  triggerCandleTime?: number;
   referencePrice?: number;
+  atr?: number;
 }
 
 export interface AlgoSignal {
@@ -84,15 +88,18 @@ export interface AlgoSignal {
   target2: number;
   riskReward: string;
   confidence: number;
+  setupScore?: number;
   generatedTime: string;
   generatedAt?: number;
   reason: string;
   status: SignalStatus;
+  initialRisk?: number;
 }
 
 export interface PaperPosition {
   id: string;
   signalId?: string;
+  strategyVersion?: string;
   symbol: SymbolKey;
   side: TradeSide;
   entryPrice: number;
@@ -110,20 +117,28 @@ export interface PaperPosition {
   initialRisk?: number;
   initialRiskAmount?: number;
   rMultiple?: number;
-  managementStage?: 'INITIAL' | 'BREAKEVEN' | 'TRAILING';
+  breakEvenActivated?: boolean;
+  trailingActivated?: boolean;
   openedAt: number;
+  lastUpdated?: number;
+  setupScore?: number;
+  reason?: string;
 }
 
 export interface ClosedTrade {
   id: string;
+  signalId?: string;
+  strategyVersion?: string;
   symbol: SymbolKey;
   side: TradeSide;
   entryPrice: number;
   exitPrice: number;
   size: number;
+  quantity?: number;
   leverage: number;
   realizedPnL: number;
   realizedPnLPercent: number;
+  realizedR?: number;
   openedAt: number;
   closedAt: number;
   durationSeconds: number;
@@ -138,6 +153,7 @@ export interface TerminalSettings {
   maxDailyLossPct: number;
   maxPortfolioRiskPct: number;
   maxConcurrentTrades: number;
+  maxSameDirection: number;
   maxLeverage: number;
   minSetupScore: number;
   maxTradesPerDay: number;
@@ -156,6 +172,8 @@ export interface TerminalSettings {
   maxHoldMinutes: number;
   minAtrPct: number;
   maxAtrPct: number;
+  minVolumeRatio: number;
+  btcTrendFilter: boolean;
   isLiveMode: boolean;
   apiKey: string;
   apiSecret: string;
@@ -168,15 +186,23 @@ export interface RiskSnapshot {
   openPositions: number;
   openRisk: number;
   maxDailyLoss: number;
+  dailyLossRemaining?: number;
   maxPortfolioRisk: number;
+  engineRunning?: boolean;
+  lastScan?: number;
   blocked: boolean;
   blockReason: string | null;
 }
 
 export interface TradingApiState {
   engine_running: boolean;
-  mode: 'PAPER';
+  mode: 'PAPER_ONLY';
   strategy: string;
+  scanner?: {
+    status: string;
+    lastScan: number;
+    symbols: string[];
+  };
   positions: PaperPosition[];
   closed_trades: ClosedTrade[];
   executed_signal_ids: string[];
