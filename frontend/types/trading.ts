@@ -37,7 +37,6 @@ export interface MarketTick {
   volume?: number;
 }
 
-// Presentation compatibility only. Strategy decisions are backend-only.
 export interface TechnicalIndicators {
   rsi: number;
   macd: { macdLine: number; signalLine: number; histogram: number };
@@ -175,7 +174,7 @@ export interface TerminalSettings {
   minAtrPct: number;
   maxAtrPct: number;
   minVolumeRatio: number;
-  signalRetentionMinutes: number;
+  signalRetentionMinutes?: number;
   btcTrendFilter: boolean;
   isLiveMode: boolean;
   apiKey: string;
