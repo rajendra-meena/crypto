@@ -32,6 +32,7 @@ export const SignalSection: React.FC = () => {
     candles,
     indicators,
     positions,
+    executedSignalIds,
     settings,
     canTrade,
   } = useTrading();
@@ -49,8 +50,6 @@ export const SignalSection: React.FC = () => {
     const entry = ticker.price;
     const isBuy = indicators.finalBias === 'BUY';
 
-    // Structure-first stop with a bounded fallback so an old distant swing does not
-    // create an excessively wide paper-trading stop.
     const structureRisk = isBuy
       ? entry - indicators.support
       : indicators.resistance - entry;
@@ -87,28 +86,37 @@ export const SignalSection: React.FC = () => {
 
   useEffect(() => {
     if (!priceActionSignal) return;
-
-    // Auto execution is intentionally restricted to paper mode.
     if (settings.isLiveMode) return;
     if (!canTrade) return;
+    if (executedSignalIds.includes(priceActionSignal.id)) return;
     if (positions.length >= settings.maxConcurrentTrades) return;
     if (positions.some((position) => position.symbol === priceActionSignal.symbol)) return;
     if (lastAutoExecutedSignalRef.current === priceActionSignal.id) return;
 
     lastAutoExecutedSignalRef.current = priceActionSignal.id;
     takeTrade(priceActionSignal);
-  }, [priceActionSignal, settings.isLiveMode, settings.maxConcurrentTrades, canTrade, positions, takeTrade]);
+  }, [
+    priceActionSignal,
+    settings.isLiveMode,
+    settings.maxConcurrentTrades,
+    canTrade,
+    positions,
+    executedSignalIds,
+    takeTrade,
+  ]);
 
   const visibleSignals = useMemo(() => {
     if (!priceActionSignal) return signals;
 
-    const executedPosition = positions.find((position) => position.signalId === priceActionSignal.id);
-    const liveSignal: AlgoSignal = executedPosition
+    const wasExecuted = executedSignalIds.includes(priceActionSignal.id)
+      || positions.some((position) => position.signalId === priceActionSignal.id);
+
+    const liveSignal: AlgoSignal = wasExecuted
       ? { ...priceActionSignal, status: 'EXECUTED' }
       : priceActionSignal;
 
     return [liveSignal, ...signals.filter((signal) => signal.id !== liveSignal.id)].slice(0, 20);
-  }, [priceActionSignal, signals, positions]);
+  }, [priceActionSignal, signals, positions, executedSignalIds]);
 
   return (
     <div className="bg-zinc-950 border border-zinc-800/80 rounded-2xl p-5">
