@@ -1,12 +1,10 @@
-"""Compatibility shim for the retired paper engine module.
+"""Compatibility alias for the retired paper_engine module.
 
-The only active strategy implementation is CryptoAlgoEngine in
-app.services.crypto_algo_engine. Keep this alias temporarily so old imports fail
-safe without maintaining a second strategy implementation.
+All paper strategy logic now lives in app.services.strategy_engine.
 """
 
-from app.services.crypto_algo_engine import CryptoAlgoEngine, DEFAULT_TRADING_SETTINGS
+from app.services.strategy_engine import CryptoStrategyEngine, DEFAULT_TRADING_SETTINGS
 
-PaperTradingEngine = CryptoAlgoEngine
+PaperTradingEngine = CryptoStrategyEngine
 
 __all__ = ["PaperTradingEngine", "DEFAULT_TRADING_SETTINGS"]
