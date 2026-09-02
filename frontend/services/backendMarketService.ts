@@ -1,16 +1,9 @@
 import {
-  SymbolKey,
-  TickerData,
   Candle,
-  TechnicalIndicators,
-  AlgoSignal,
   MarketTick as BackendMarketTick,
 } from '@/types/trading';
 
-// Frontend -> Backend WebSocket connection states
 export type BackendConnectionState = 'CONNECTING' | 'CONNECTED' | 'RECONNECTING' | 'DISCONNECTED';
-
-// Backend -> Delta Exchange connection states
 export type DeltaConnectionState = 'CONNECTING' | 'CONNECTED' | 'RECONNECTING' | 'STALE' | 'DISCONNECTED';
 
 export interface ConnectionStates {
@@ -24,12 +17,28 @@ interface WSMessage {
   timestamp: number;
 }
 
+interface BackendCandle {
+  symbol: string;
+  timeframe: string;
+  timestamp: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+  is_complete?: boolean;
+}
+
 interface MarketSnapshot {
   symbol: string;
   current_price: number;
   candles: Candle[];
   connection_state: DeltaConnectionState;
   last_update: number;
+}
+
+interface BackendMarketSnapshot extends Omit<MarketSnapshot, 'candles'> {
+  candles: BackendCandle[];
 }
 
 interface HealthResponse {
@@ -62,18 +71,15 @@ export class BackendMarketService {
   private isConnecting = false;
   private shouldReconnect = true;
 
-  // Connection state tracking
   private backendState: BackendConnectionState = 'DISCONNECTED';
   private deltaState: DeltaConnectionState = 'DISCONNECTED';
 
-  // Callbacks
   private onTick?: TickCallback;
   private onCandle?: CandleCallback;
   private onSnapshot?: SnapshotCallback;
   private onConnectionStateChange?: ConnectionStateCallback;
   private onError?: ErrorCallback;
 
-  // Local state
   private symbolStates: Map<string, {
     currentPrice: number;
     candles: Candle[];
@@ -100,33 +106,39 @@ export class BackendMarketService {
     this.onError = callbacks.onError;
   }
 
-  // Fetch health from backend REST endpoint
+  private _normalizeCandle(payload: BackendCandle): Candle {
+    return {
+      symbol: payload.symbol as Candle['symbol'],
+      timeframe: payload.timeframe,
+      time: payload.timestamp,
+      open: payload.open,
+      high: payload.high,
+      low: payload.low,
+      close: payload.close,
+      volume: payload.volume,
+      is_complete: payload.is_complete,
+    };
+  }
+
   async fetchHealth(): Promise<void> {
     try {
       const response = await fetch(`${this.apiBaseUrl}/health`, { cache: 'no-store' });
       if (!response.ok) return;
       const health: HealthResponse = await response.json();
       this._updateDeltaState(health.delta_connection_state);
-      
-      // Update per-symbol delta connection states
-      if (health.live_symbols) {
-        health.live_symbols.forEach((sym: string) => {
-          const state = this.symbolStates.get(sym);
-          if (state) state.deltaConnectionState = 'CONNECTED';
-        });
-      }
-      if (health.stale_symbols) {
-        health.stale_symbols.forEach((sym: string) => {
-          const state = this.symbolStates.get(sym);
-          if (state) state.deltaConnectionState = 'STALE';
-        });
-      }
-      if (health.no_data_symbols) {
-        health.no_data_symbols.forEach((sym: string) => {
-          const state = this.symbolStates.get(sym);
-          if (state) state.deltaConnectionState = 'DISCONNECTED';
-        });
-      }
+
+      health.live_symbols?.forEach((sym) => {
+        const state = this.symbolStates.get(sym);
+        if (state) state.deltaConnectionState = 'CONNECTED';
+      });
+      health.stale_symbols?.forEach((sym) => {
+        const state = this.symbolStates.get(sym);
+        if (state) state.deltaConnectionState = 'STALE';
+      });
+      health.no_data_symbols?.forEach((sym) => {
+        const state = this.symbolStates.get(sym);
+        if (state) state.deltaConnectionState = 'DISCONNECTED';
+      });
     } catch (err) {
       console.warn('[BackendMarketService] Health fetch failed:', err);
     }
@@ -135,13 +147,11 @@ export class BackendMarketService {
   connect(): Promise<void> {
     return new Promise((resolve, reject) => {
       if (this.ws?.readyState === WebSocket.OPEN) {
-        console.log('[Frontend WS] Already connected');
         resolve();
         return;
       }
 
       if (this.isConnecting) {
-        console.log('[Frontend WS] Already connecting, waiting...');
         const checkConnection = setInterval(() => {
           if (this.ws?.readyState === WebSocket.OPEN) {
             clearInterval(checkConnection);
@@ -156,40 +166,31 @@ export class BackendMarketService {
       this._updateBackendState('CONNECTING');
 
       try {
-        console.log('[Frontend WS] Creating WebSocket to:', this.url);
         this.ws = new WebSocket(this.url);
 
         this.ws.onopen = () => {
-          console.log('[Frontend WS] OPEN - WebSocket connected');
           this.isConnecting = false;
           this.reconnectAttempts = 0;
           this.reconnectDelay = 1000;
           this._updateBackendState('CONNECTED');
-          
-          // Re-subscribe to symbols
+
           if (this.subscribedSymbols.size > 0) {
             this._send({
               type: 'subscribe',
               symbols: Array.from(this.subscribedSymbols),
             });
           }
-          
-          // Fetch initial health
+
           this.fetchHealth();
-          
-          // Start periodic health polling
           this._startHealthPolling();
-          
           resolve();
         };
 
         this.ws.onmessage = (event) => {
-          console.log('[Frontend WS] Message received:', event.data.substring(0, 200));
           this._handleMessage(event.data);
         };
 
-        this.ws.onclose = (event) => {
-          console.log('[Frontend WS] CLOSE code:', event.code, 'reason:', event.reason);
+        this.ws.onclose = () => {
           this.isConnecting = false;
           this._updateBackendState('DISCONNECTED');
           this._updateDeltaState('DISCONNECTED');
@@ -197,8 +198,7 @@ export class BackendMarketService {
           this._attemptReconnect();
         };
 
-        this.ws.onerror = (error) => {
-          console.error('[Frontend WS] ERROR:', error);
+        this.ws.onerror = () => {
           this.isConnecting = false;
           this._updateBackendState('DISCONNECTED');
           this.onError?.('WebSocket connection error');
@@ -215,9 +215,7 @@ export class BackendMarketService {
 
   private _startHealthPolling() {
     this._stopHealthPolling();
-    this.healthPollInterval = setInterval(() => {
-      this.fetchHealth();
-    }, 5000); // Poll every 5 seconds
+    this.healthPollInterval = setInterval(() => this.fetchHealth(), 5000);
   }
 
   private _stopHealthPolling() {
@@ -229,9 +227,8 @@ export class BackendMarketService {
 
   private _attemptReconnect() {
     if (!this.shouldReconnect) return;
-    
+
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-      console.error('[BackendMarketService] Max reconnect attempts reached');
       this._updateBackendState('DISCONNECTED');
       this.onError?.('Max reconnection attempts reached');
       return;
@@ -239,15 +236,11 @@ export class BackendMarketService {
 
     this.reconnectAttempts++;
     this._updateBackendState('RECONNECTING');
-    
-    console.log(`[BackendMarketService] Reconnecting... (attempt ${this.reconnectAttempts})`);
-    
+
     setTimeout(() => {
-      this.connect().catch(() => {
-        // Reconnect will be attempted again in onclose
-      });
+      this.connect().catch(() => undefined);
     }, this.reconnectDelay);
-    
+
     this.reconnectDelay = Math.min(this.reconnectDelay * 2, 30000);
   }
 
@@ -263,27 +256,20 @@ export class BackendMarketService {
   }
 
   subscribe(symbols: string[]) {
-    const newSymbols = symbols.filter(s => !this.subscribedSymbols.has(s));
+    const newSymbols = symbols.filter((s) => !this.subscribedSymbols.has(s));
     if (newSymbols.length === 0) return;
 
-    newSymbols.forEach(s => this.subscribedSymbols.add(s));
+    newSymbols.forEach((s) => this.subscribedSymbols.add(s));
 
     if (this.ws?.readyState === WebSocket.OPEN) {
-      this._send({
-        type: 'subscribe',
-        symbols: newSymbols,
-      });
+      this._send({ type: 'subscribe', symbols: newSymbols });
     }
   }
 
   unsubscribe(symbols: string[]) {
-    symbols.forEach(s => this.subscribedSymbols.delete(s));
-
+    symbols.forEach((s) => this.subscribedSymbols.delete(s));
     if (this.ws?.readyState === WebSocket.OPEN) {
-      this._send({
-        type: 'unsubscribe',
-        symbols,
-      });
+      this._send({ type: 'unsubscribe', symbols });
     }
   }
 
@@ -296,31 +282,22 @@ export class BackendMarketService {
   private _handleMessage(data: string) {
     try {
       const message: WSMessage = JSON.parse(data);
-      console.log('[Frontend WS] Handling message type:', message.type);
-      
       switch (message.type) {
         case 'market_tick':
-          console.log('[Frontend WS] Handling market_tick for:', message.payload?.symbol);
-          this._handleTick(message.payload);
+          this._handleTick(message.payload as BackendMarketTick);
           break;
         case 'candle_update':
-          console.log('[Frontend WS] Handling candle_update for:', message.payload?.symbol, 'timeframe:', message.payload?.timeframe);
-          this._handleCandle(message.payload);
+          this._handleCandle(message.payload as BackendCandle);
           break;
         case 'market_snapshot':
-          console.log('[Frontend WS] Handling market_snapshot for:', message.payload?.symbol);
-          this._handleSnapshot(message.payload);
+          this._handleSnapshot(message.payload as BackendMarketSnapshot);
           break;
         case 'connection_status':
-          console.log('[Frontend WS] Handling connection_status:', message.payload?.state);
           this._updateDeltaState(message.payload.state);
           break;
         case 'error':
-          console.error('[Frontend WS] ERROR from backend:', message.payload?.message);
-          this.onError?.(message.payload.message);
+          this.onError?.(message.payload?.message || 'Backend WebSocket error');
           break;
-        default:
-          console.log('[Frontend WS] Unknown message type:', message.type);
       }
     } catch (err) {
       console.error('[Frontend WS] Failed to parse message:', err);
@@ -329,29 +306,22 @@ export class BackendMarketService {
 
   private _updateBackendState(state: BackendConnectionState) {
     if (this.backendState === state) return;
-    console.log('[Frontend WS] Backend state changed:', this.backendState, '->', state);
     this.backendState = state;
     this._notifyConnectionStateChange();
   }
 
   private _updateDeltaState(state: DeltaConnectionState) {
     if (this.deltaState === state) return;
-    console.log('[Frontend WS] Delta state changed:', this.deltaState, '->', state);
     this.deltaState = state;
     this._notifyConnectionStateChange();
   }
 
   private _notifyConnectionStateChange() {
-    console.log('[Frontend WS] Notifying connection state change:', { backend: this.backendState, delta: this.deltaState });
-    this.onConnectionStateChange?.({
-      backend: this.backendState,
-      delta: this.deltaState,
-    });
+    this.onConnectionStateChange?.({ backend: this.backendState, delta: this.deltaState });
   }
 
   private _handleTick(payload: BackendMarketTick) {
     const { symbol, price, timestamp } = payload;
-    
     let state = this.symbolStates.get(symbol);
     if (!state) {
       state = {
@@ -362,17 +332,17 @@ export class BackendMarketService {
       };
       this.symbolStates.set(symbol, state);
     }
-    
+
     state.currentPrice = price;
     state.lastTickTime = timestamp;
     state.deltaConnectionState = 'CONNECTED';
-    
     this.onTick?.(payload);
   }
 
-  private _handleCandle(payload: Candle) {
-    const { symbol } = payload;
-    
+  private _handleCandle(payload: BackendCandle) {
+    const candle = this._normalizeCandle(payload);
+    const { symbol } = candle;
+
     let state = this.symbolStates.get(symbol);
     if (!state) {
       state = {
@@ -383,28 +353,28 @@ export class BackendMarketService {
       };
       this.symbolStates.set(symbol, state);
     }
-    
-    // Update or add candle
-    const existingIndex = state.candles.findIndex(c => 
-      c.timeframe === payload.timeframe && c.time === payload.time
+
+    const existingIndex = state.candles.findIndex(
+      (c) => c.timeframe === candle.timeframe && c.time === candle.time
     );
-    
+
     if (existingIndex >= 0) {
-      state.candles[existingIndex] = payload;
+      state.candles[existingIndex] = candle;
     } else {
-      state.candles.push(payload);
-      // Keep only recent candles
+      state.candles.push(candle);
       if (state.candles.length > 500) {
         state.candles = state.candles.slice(-500);
       }
     }
-    
-    this.onCandle?.(payload);
+
+    this.onCandle?.(candle);
   }
 
-  private _handleSnapshot(payload: MarketSnapshot) {
-    const { symbol, current_price, candles, connection_state, last_update } = payload;
-    
+  private _handleSnapshot(payload: BackendMarketSnapshot) {
+    const candles = (payload.candles || []).map((c) => this._normalizeCandle(c));
+    const snapshot: MarketSnapshot = { ...payload, candles };
+    const { symbol, current_price, connection_state, last_update } = snapshot;
+
     let state = this.symbolStates.get(symbol);
     if (!state) {
       state = {
@@ -415,21 +385,15 @@ export class BackendMarketService {
       };
       this.symbolStates.set(symbol, state);
     }
-    
+
     state.currentPrice = current_price;
     state.candles = candles;
     state.lastTickTime = last_update;
     state.deltaConnectionState = connection_state;
-    
-    this.onSnapshot?.(payload);
+
+    this.onSnapshot?.(snapshot);
   }
 
-  private _updateConnectionState(state: BackendConnectionState | DeltaConnectionState) {
-    // Legacy - kept for backward compatibility
-    this._updateDeltaState(state as DeltaConnectionState);
-  }
-
-  // Getters for current state
   getSymbolState(symbol: string) {
     return this.symbolStates.get(symbol);
   }
@@ -455,10 +419,7 @@ export class BackendMarketService {
   }
 
   getConnectionStates(): ConnectionStates {
-    return {
-      backend: this.backendState,
-      delta: this.deltaState,
-    };
+    return { backend: this.backendState, delta: this.deltaState };
   }
 
   isConnected(): boolean {
@@ -466,7 +427,6 @@ export class BackendMarketService {
   }
 }
 
-// Singleton instance
 let instance: BackendMarketService | null = null;
 
 export function getBackendMarketService(): BackendMarketService {
