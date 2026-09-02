@@ -13,6 +13,10 @@ class Settings(BaseSettings):
 
     market_data_mode: str = "REAL"
 
+    # Local persistent database for paper positions, closed trades and executed signals.
+    # Override with DATABASE_PATH in backend/.env when required.
+    database_path: str = "data/crypto_algo.db"
+
     log_level: str = "INFO"
     log_format: str = "json"
 
@@ -29,13 +33,13 @@ class Settings(BaseSettings):
 
     # Delta Exchange public WebSocket channels (per official docs)
     delta_channels: Dict[str, str] = {
-        "ticker": "ticker",           # Real-time ticker with mark price, spot price, 24h stats
+        "ticker": "ticker",
         "candlestick_1m": "candlestick_1m",
         "candlestick_5m": "candlestick_5m",
         "candlestick_15m": "candlestick_15m",
         "candlestick_1h": "candlestick_1h",
         "candlestick_4h": "candlestick_4h",
-        "mark_price": "mark_price",   # Requires MARK:<symbol> format
+        "mark_price": "mark_price",
     }
 
     class Config:
