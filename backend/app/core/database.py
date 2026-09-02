@@ -55,6 +55,12 @@ class PaperTradingDatabase:
                     symbol TEXT NOT NULL,
                     executed_at INTEGER NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS app_state (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at INTEGER NOT NULL
+                );
                 """
             )
             conn.commit()
@@ -141,6 +147,29 @@ class PaperTradingDatabase:
                     executed_at=excluded.executed_at
                 """,
                 (signal_id, symbol, executed_at),
+            )
+            conn.commit()
+
+    def get_engine_running(self) -> bool:
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT value FROM app_state WHERE key = 'engine_running'"
+            ).fetchone()
+        if not row:
+            return False
+        return str(row["value"]).lower() == "true"
+
+    def set_engine_running(self, running: bool, updated_at: int) -> None:
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO app_state(key, value, updated_at)
+                VALUES ('engine_running', ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value=excluded.value,
+                    updated_at=excluded.updated_at
+                """,
+                ("true" if running else "false", updated_at),
             )
             conn.commit()
 
