@@ -15,6 +15,7 @@ from app.ws.manager import ConnectionManager
 from app.api import health, market, websocket, trading
 from app.models.schemas import PriceSource
 
+
 structlog.configure(
     processors=[
         structlog.stdlib.filter_by_level,
@@ -46,7 +47,7 @@ DEFAULT_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT"]
 async def lifespan(app: FastAPI):
     global market_data_service, connection_manager, algo_engine
 
-    logger.info("Starting backend", version="3.0.0", mode=settings.market_data_mode)
+    logger.info("Starting backend", version="3.1.0", mode=settings.market_data_mode)
     paper_db.initialize()
     logger.info("Trading database initialized", path=str(paper_db.db_path))
 
@@ -92,7 +93,7 @@ async def lifespan(app: FastAPI):
     scanner_task = asyncio.create_task(scanner_loop())
     logger.info(
         "Crypto algo engine started",
-        strategy="MTF_PRICE_ACTION_V1",
+        strategy=algo_engine.STRATEGY_VERSION,
         symbols=DEFAULT_SYMBOLS,
         scan_interval_seconds=2,
         execution_mode="PAPER_ONLY",
@@ -112,8 +113,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Delta Crypto Algo Backend",
-    description="Real-time Delta market data with backend-owned multi-timeframe paper trading engine",
-    version="3.0.0",
+    description="Real-time Delta market data with backend-authoritative 15m/5m/1m paper trading engine",
+    version="3.1.0",
     lifespan=lifespan,
 )
 
@@ -140,11 +141,11 @@ app.include_router(trading.router)
 async def root():
     return {
         "service": "Delta Crypto Algo Backend",
-        "version": "3.0.0",
+        "version": "3.1.0",
         "mode": settings.market_data_mode,
-        "strategy": "MTF_PRICE_ACTION_V1",
+        "strategy": algo_engine.STRATEGY_VERSION if algo_engine else CryptoAlgoEngine.STRATEGY_VERSION,
         "execution": "PAPER_ONLY",
-        "scanner": "ACTIVE",
+        "scanner": "ACTIVE" if algo_engine else "STARTING",
         "trading_api": "/api/trading/state",
         "docs": "/docs",
     }
