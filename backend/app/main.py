@@ -60,6 +60,7 @@ async def lifespan(app: FastAPI):
     market.market_data_service = market_data_service
     websocket.connection_manager = connection_manager
     websocket.market_data_service = market_data_service
+    paper.market_data_service = market_data_service
 
     await market_data_service.start(DEFAULT_SYMBOLS)
     paper_engine = PaperTradingEngine(market_data_service)
