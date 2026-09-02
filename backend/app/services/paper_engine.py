@@ -1,4 +1,3 @@
-import math
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -41,12 +40,11 @@ def _atr(candles: List[Any], period: int = 14) -> float:
     for idx in range(start, len(candles)):
         c = candles[idx]
         prev = candles[idx - 1]
-        tr = max(
+        trs.append(max(
             float(c.high) - float(c.low),
             abs(float(c.high) - float(prev.close)),
             abs(float(c.low) - float(prev.close)),
-        )
-        trs.append(tr)
+        ))
     return sum(trs) / len(trs) if trs else 0.0
 
 
@@ -57,10 +55,7 @@ def _today_start_ms() -> int:
 
 
 class PaperTradingEngine:
-    """Backend-owned multi-symbol paper strategy and risk/execution engine.
-
-    The engine only creates PAPER positions. It never submits real exchange orders.
-    """
+    """Backend-owned multi-symbol PAPER strategy, risk and execution engine."""
 
     def __init__(self, market_data_service: Any):
         self.market_data_service = market_data_service
@@ -123,7 +118,6 @@ class PaperTradingEngine:
         elif float(current.close) < ema9 < ema20:
             score -= 2
             reasons.append("EMA trend down")
-
         if bullish_breakout:
             score += 3
             reasons.append("10-bar breakout")
@@ -143,11 +137,7 @@ class PaperTradingEngine:
                 score -= 1
             reasons.append("volume confirmation")
 
-        side: Optional[str] = None
-        if score >= 4:
-            side = "BUY"
-        elif score <= -4:
-            side = "SELL"
+        side: Optional[str] = "BUY" if score >= 4 else "SELL" if score <= -4 else None
         if not side:
             return None
 
@@ -176,9 +166,11 @@ class PaperTradingEngine:
         today = paper_db.list_closed_trades_since(_today_start_ms())
         if len(today) >= int(settings["maxTradesPerDay"]):
             return True
+
         realized = sum(float(t.get("realizedPnL", 0)) for t in today)
         max_daily_loss = float(settings["capital"]) * float(settings["maxDailyLossPct"]) / 100.0
         if realized <= -max_daily_loss:
+            paper_db.set_engine_running(False, int(time.time() * 1000))
             return True
 
         consecutive_losses = 0
@@ -188,6 +180,7 @@ class PaperTradingEngine:
             else:
                 break
         if consecutive_losses >= int(settings["maxConsecutiveLosses"]):
+            paper_db.set_engine_running(False, int(time.time() * 1000))
             return True
 
         cooldown_ms = int(float(settings["cooldownMinutes"]) * 60_000)
@@ -201,9 +194,7 @@ class PaperTradingEngine:
             return
         settings = self.get_settings()
         signal = self.analyze_symbol(symbol)
-        if not signal:
-            return
-        if signal["confidence"] < int(settings["minConfidence"]):
+        if not signal or signal["confidence"] < int(settings["minConfidence"]):
             return
         if self.last_signal_candle.get(symbol) == signal["candleTime"]:
             return
@@ -262,8 +253,7 @@ class PaperTradingEngine:
         paper_db.mark_signal_executed(signal_id, symbol, now)
 
     async def on_tick(self, symbol: str, price: float) -> None:
-        positions = paper_db.list_positions()
-        position = next((p for p in positions if str(p.get("symbol")) == symbol), None)
+        position = next((p for p in paper_db.list_positions() if str(p.get("symbol")) == symbol), None)
         if not position:
             return
 
@@ -280,21 +270,17 @@ class PaperTradingEngine:
         fee_rate = float(settings["feeRatePct"]) / 100.0
         estimated_fees = (entry_notional + exit_notional) * fee_rate
         unrealized = gross - estimated_fees
-        risk_capital = max(float(settings["capital"]), 1e-9)
+        capital = max(float(settings["capital"]), 1e-9)
         position["currentPrice"] = round(price, 6)
         position["unrealizedPnL"] = round(unrealized, 2)
-        position["unrealizedPnLPercent"] = round((unrealized / risk_capital) * 100.0, 3)
+        position["unrealizedPnLPercent"] = round((unrealized / capital) * 100.0, 3)
         position["lastUpdated"] = int(time.time() * 1000)
         paper_db.upsert_position(position)
 
         exit_reason: Optional[str] = None
-        if side == "BUY" and price <= stop:
+        if side == "BUY" and price <= stop or side == "SELL" and price >= stop:
             exit_reason = "STOP_LOSS"
-        elif side == "SELL" and price >= stop:
-            exit_reason = "STOP_LOSS"
-        elif side == "BUY" and price >= target:
-            exit_reason = "TARGET"
-        elif side == "SELL" and price <= target:
+        elif side == "BUY" and price >= target or side == "SELL" and price <= target:
             exit_reason = "TARGET"
         if not exit_reason:
             return
@@ -315,7 +301,7 @@ class PaperTradingEngine:
             "quantity": quantity,
             "leverage": float(position.get("leverage", 1)),
             "realizedPnL": round(realized, 2),
-            "realizedPnLPercent": round((realized / risk_capital) * 100.0, 3),
+            "realizedPnLPercent": round((realized / capital) * 100.0, 3),
             "fees": round(fees, 2),
             "exitReason": exit_reason,
             "openedAt": int(position["openedAt"]),
