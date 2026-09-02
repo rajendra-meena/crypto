@@ -1,10 +1,11 @@
-import { ClosedTrade, PaperPosition } from '@/types/trading';
+import { ClosedTrade, PaperPosition, TerminalSettings } from '@/types/trading';
 
 export interface PersistedPaperState {
   engine_running: boolean;
   positions: PaperPosition[];
   closed_trades: ClosedTrade[];
   executed_signal_ids: string[];
+  settings?: Record<string, unknown>;
 }
 
 const apiBaseUrl = (process.env.NEXT_PUBLIC_BACKEND_API_URL || 'http://localhost:8000').replace(/\/$/, '');
@@ -35,6 +36,13 @@ export async function saveEngineState(running: boolean): Promise<void> {
   await request('/api/paper/engine', {
     method: 'PUT',
     body: JSON.stringify({ running }),
+  });
+}
+
+export async function saveTradingSettings(settings: Partial<TerminalSettings> & Record<string, unknown>): Promise<void> {
+  await request('/api/paper/settings', {
+    method: 'PUT',
+    body: JSON.stringify({ settings }),
   });
 }
 
