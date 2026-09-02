@@ -47,7 +47,7 @@ DEFAULT_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT"]
 async def lifespan(app: FastAPI):
     global market_data_service, connection_manager, algo_engine
 
-    logger.info("Starting backend", version="3.2.0", mode=settings.market_data_mode)
+    logger.info("Starting backend", version="3.2.1", mode=settings.market_data_mode)
     paper_db.initialize()
     logger.info("Trading database initialized", path=str(paper_db.db_path))
 
@@ -77,6 +77,8 @@ async def lifespan(app: FastAPI):
     async def on_candle_bridge(candle):
         await original_broadcast_candle(candle)
         if candle.is_complete:
+            # Completed candle means strategy inputs changed, so force fresh evaluation.
+            algo_engine.last_evaluation_key.pop(candle.symbol, None)
             await algo_engine.on_completed_candle(candle.symbol)
 
     market_data_service._broadcast_tick_update = on_tick_bridge
@@ -85,6 +87,11 @@ async def lifespan(app: FastAPI):
     async def scanner_loop():
         while market_data_service.running:
             try:
+                # Execution guards are dynamic (engine ON/OFF, portfolio slots,
+                # daily risk). Recheck them even if candle data is unchanged.
+                # Duplicate entries remain impossible because executed signal IDs
+                # and open-position checks live in the backend engine/database.
+                algo_engine.last_evaluation_key.clear()
                 await algo_engine.scan_all_symbols()
             except Exception as exc:
                 logger.error("Algo scanner iteration failed", error=str(exc))
@@ -114,7 +121,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Delta Crypto Algo Backend",
     description="Real-time Delta market data with backend-authoritative 15m/5m/1m paper trading engine",
-    version="3.2.0",
+    version="3.2.1",
     lifespan=lifespan,
 )
 
@@ -141,7 +148,7 @@ app.include_router(trading.router)
 async def root():
     return {
         "service": "Delta Crypto Algo Backend",
-        "version": "3.2.0",
+        "version": "3.2.1",
         "mode": settings.market_data_mode,
         "strategy": algo_engine.STRATEGY_VERSION if algo_engine else CryptoStrategyEngine.STRATEGY_VERSION,
         "execution": "PAPER_ONLY",
