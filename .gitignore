@@ -1,27 +1,35 @@
-# See https://github.com/github/gitignore/blob/main/Node.gitignore
+# Node / Next.js
 node_modules/
-
-# See https://github.com/github/gitignore/blob/main/VisualStudio.gitignore
-*.suo
-*.user
-*.sln
-*.ide
-
-# Next.js
 .next/
 out/
+*.tsbuildinfo
+tsconfig.tsbuildinfo
 
-# Tailwind
-*.local.js
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+.pytest_cache/
+
+# Local trading database
+backend/data/*.db
+backend/data/*.db-*
+data/*.db
+data/*.db-*
 
 # Environment variables
 .env*
 !.env.example
 
-# TypeScript
-*.tsbuildinfo
-tsconfig.tsbuildinfo
-
-# OS
+# IDE / OS
+*.suo
+*.user
+*.sln
+*.ide
 .DS_Store
 Thumbs.db
+
+# Tailwind
+*.local.js
