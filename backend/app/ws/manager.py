@@ -6,7 +6,15 @@ from fastapi import WebSocket
 
 from app.core.config import get_settings
 from app.services.delta_rest import DeltaRestClient
-from app.models.schemas import ConnectionState, MarketTick, Candle, WSMessage, WSMessageType
+from app.models.schemas import (
+    ConnectionState,
+    MarketTick,
+    Candle,
+    WSMessage,
+    WSMessageType,
+    SubscribeRequest,
+    UnsubscribeRequest,
+)
 from app.utils.timestamp import normalize_timestamp, format_timestamp_log
 
 logger = logging.getLogger(__name__)
@@ -32,7 +40,6 @@ class ConnectionManager:
         logger.info(f"FRONTEND_WS_CLIENT_DISCONNECTED client_id={id(websocket)} Total connections: {len(self.active_connections)}")
 
     async def _handle_connection_close(self, websocket: WebSocket, close_code: int = None):
-        """Handle WebSocket connection close"""
         logger.info(f"WebSocket connection closed, code: {close_code}")
         self.disconnect(websocket)
 
@@ -45,11 +52,9 @@ class ConnectionManager:
             self.symbol_subscribers[symbol].add(websocket)
             logger.info(f"SUBSCRIBER_REGISTERED client_id={id(websocket)} symbol={symbol} total_subscribers={len(self.symbol_subscribers[symbol])}")
 
-        # Subscribe in market data service
         if self.market_data_service:
             await self.market_data_service.subscribe(symbols)
 
-        # Send snapshot for each symbol
         for symbol in symbols:
             snapshot = self.market_data_service.get_snapshot(symbol) if self.market_data_service else None
             if snapshot:
