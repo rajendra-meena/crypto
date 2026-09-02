@@ -29,24 +29,27 @@ const DEFAULT_SETTINGS: TerminalSettings = {
   maxDailyLossPct: 2.5,
   maxPortfolioRiskPct: 1.5,
   maxConcurrentTrades: 2,
+  maxSameDirection: 2,
   maxLeverage: 3,
-  minSetupScore: 72,
+  minSetupScore: 70,
   maxTradesPerDay: 6,
   maxConsecutiveLosses: 3,
   cooldownMinutes: 20,
-  atrStopMultiplier: 1.3,
-  targetRR: 2.2,
+  atrStopMultiplier: 1.4,
+  targetRR: 2,
   feeRatePct: 0.05,
   slippagePct: 0.02,
   maxEntryDriftPct: 0.35,
-  minStopPct: 0.3,
-  maxStopPct: 1.8,
+  minStopPct: 0.25,
+  maxStopPct: 1.5,
   breakevenAtR: 1,
   trailingStartR: 1.5,
   trailingDistanceR: 0.75,
   maxHoldMinutes: 240,
-  minAtrPct: 0.18,
-  maxAtrPct: 3.5,
+  minAtrPct: 0.03,
+  maxAtrPct: 2.5,
+  minVolumeRatio: 1.1,
+  btcTrendFilter: true,
   isLiveMode: false,
   apiKey: '',
   apiSecret: '',
@@ -83,7 +86,7 @@ function settingsFromApi(raw?: Record<string, unknown>): TerminalSettings {
       if (raw[key] !== undefined) next[key] = raw[key];
     });
   }
-  // Real exchange execution is intentionally disabled in this app path.
+  // Live exchange order execution is deliberately outside this validated path.
   next.isLiveMode = false;
   next.apiKey = '';
   next.apiSecret = '';
@@ -108,8 +111,8 @@ function analysisToIndicators(analysis?: BackendAnalysis): TechnicalIndicators |
     resistance: analysis.resistance,
     marketTrend: trend,
     momentum: analysis.trigger === 'NONE' ? 'WEAK' : 'STRONG',
-    volatility: analysis.atrPct > 1 ? 'HIGH' : analysis.atrPct < 0.25 ? 'LOW' : 'NORMAL',
-    volumeStrength: analysis.volumeRatio >= 1.2 ? 'HIGH' : analysis.volumeRatio < 0.8 ? 'LOW' : 'AVERAGE',
+    volatility: analysis.atrPct > 1 ? 'HIGH' : analysis.atrPct < 0.08 ? 'LOW' : 'NORMAL',
+    volumeStrength: analysis.volumeRatio >= 1.1 ? 'HIGH' : analysis.volumeRatio < 0.8 ? 'LOW' : 'AVERAGE',
     marketStructure: structure,
     confidence: analysis.setupScore,
     finalBias: analysis.bias,
@@ -182,7 +185,7 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const isMarketDataLive = deltaConnectionState === 'CONNECTED';
   const isMarketDataStale = deltaConnectionState === 'STALE' || deltaConnectionState === 'DISCONNECTED';
   const dataSource: 'REAL' | 'MOCK' | 'STALE' = isMarketDataLive ? 'REAL' : 'STALE';
-  const canTrade = isMarketDataLive && isEngineRunning && !riskSnapshot.blocked;
+  const canTrade = backendConnectionState === 'CONNECTED' && isMarketDataLive && isEngineRunning && !riskSnapshot.blocked;
 
   const applyTradingState = useCallback((state: Awaited<ReturnType<typeof getTradingState>>) => {
     setEngineRunningState(Boolean(state.engine_running));
@@ -199,14 +202,14 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
     setWatchlist((prev) => prev.map((coin) => {
       const analysis = analysisMap.get(coin.symbol);
       const signal = signalMap.get(coin.symbol);
-      let signalState = analysis?.status || 'WATCHING';
+      let signalState: TickerData['signalState'] = analysis?.status || 'WATCHING';
       if (signal?.status === 'EXECUTED') signalState = 'EXECUTED';
       else if (signal?.status === 'READY') signalState = 'READY';
       else if (signal?.status === 'BLOCKED' || signal?.status === 'FILTERED') signalState = signal.status;
       return {
         ...coin,
         signalState,
-        confidence: analysis?.setupScore || signal?.confidence || 0,
+        confidence: analysis?.setupScore || signal?.setupScore || signal?.confidence || 0,
       };
     }));
   }, []);
@@ -316,13 +319,16 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
     const snapshot = service.getSymbolState(sym);
     if (snapshot) {
       setCandles(snapshot.candles);
-      const existing = watchlist.find((coin) => coin.symbol === sym);
-      setTicker({ ...(existing || createTicker(sym)), price: snapshot.currentPrice, lastUpdated: snapshot.lastTickTime });
+      setTicker((prev) => ({
+        ...(prev?.symbol === sym ? prev : createTicker(sym)),
+        price: snapshot.currentPrice,
+        lastUpdated: snapshot.lastTickTime,
+      }));
     } else {
       setCandles([]);
-      setTicker(watchlist.find((coin) => coin.symbol === sym) || createTicker(sym));
+      setTicker(createTicker(sym));
     }
-  }, [watchlist]);
+  }, []);
 
   const setSymbol = useCallback((sym: SymbolKey) => {
     symbolRef.current = sym;
@@ -351,8 +357,9 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
       });
   }, [refreshTradingState]);
 
+  // Kept only so old presentation components compile. Frontend trade creation is disabled.
   const takeTrade = useCallback((_signal: AlgoSignal) => {
-    console.warn('[TradingContext] Manual signal execution is disabled. Backend engine owns all entries.');
+    console.warn('[TradingContext] Frontend execution is disabled. Backend owns every entry.');
   }, []);
 
   const closePosition = useCallback((positionId: string) => {
