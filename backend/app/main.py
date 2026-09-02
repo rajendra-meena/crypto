@@ -10,7 +10,7 @@ import structlog
 from app.core.config import get_settings
 from app.core.database import paper_db
 from app.services.market_data import MarketDataService
-from app.services.crypto_algo_engine import CryptoAlgoEngine
+from app.services.strategy_engine import CryptoStrategyEngine
 from app.ws.manager import ConnectionManager
 from app.api import health, market, websocket, trading
 from app.models.schemas import PriceSource
@@ -38,7 +38,7 @@ logger = structlog.get_logger()
 
 market_data_service: MarketDataService = None
 connection_manager: ConnectionManager = None
-algo_engine: CryptoAlgoEngine = None
+algo_engine: CryptoStrategyEngine = None
 settings = get_settings()
 DEFAULT_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT"]
 
@@ -47,7 +47,7 @@ DEFAULT_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT"]
 async def lifespan(app: FastAPI):
     global market_data_service, connection_manager, algo_engine
 
-    logger.info("Starting backend", version="3.1.0", mode=settings.market_data_mode)
+    logger.info("Starting backend", version="3.2.0", mode=settings.market_data_mode)
     paper_db.initialize()
     logger.info("Trading database initialized", path=str(paper_db.db_path))
 
@@ -62,7 +62,7 @@ async def lifespan(app: FastAPI):
 
     await market_data_service.start(DEFAULT_SYMBOLS)
 
-    algo_engine = CryptoAlgoEngine(market_data_service)
+    algo_engine = CryptoStrategyEngine(market_data_service)
     trading.market_data_service = market_data_service
     trading.algo_engine = algo_engine
 
@@ -114,7 +114,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Delta Crypto Algo Backend",
     description="Real-time Delta market data with backend-authoritative 15m/5m/1m paper trading engine",
-    version="3.1.0",
+    version="3.2.0",
     lifespan=lifespan,
 )
 
@@ -141,9 +141,9 @@ app.include_router(trading.router)
 async def root():
     return {
         "service": "Delta Crypto Algo Backend",
-        "version": "3.1.0",
+        "version": "3.2.0",
         "mode": settings.market_data_mode,
-        "strategy": algo_engine.STRATEGY_VERSION if algo_engine else CryptoAlgoEngine.STRATEGY_VERSION,
+        "strategy": algo_engine.STRATEGY_VERSION if algo_engine else CryptoStrategyEngine.STRATEGY_VERSION,
         "execution": "PAPER_ONLY",
         "scanner": "ACTIVE" if algo_engine else "STARTING",
         "trading_api": "/api/trading/state",
