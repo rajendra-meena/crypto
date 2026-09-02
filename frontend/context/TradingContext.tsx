@@ -15,6 +15,7 @@ import {
   getBackendMarketService,
   BackendMarketService,
 } from '@/services/backendMarketService';
+import { analyzePriceAction } from '@/services/priceActionAnalysis';
 
 const DEFAULT_SETTINGS: TerminalSettings = {
   capital: 10000,
@@ -90,7 +91,7 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const [ticker, setTicker] = useState<TickerData>(() => createTicker('BTCUSDT'));
   const [watchlist, setWatchlist] = useState<TickerData[]>(() => ALL_SYMBOLS.map((s) => createTicker(s)));
   const [candles, setCandles] = useState<Candle[]>([]);
-  const [indicators] = useState<TechnicalIndicators | null>(null);
+  const [indicators, setIndicators] = useState<TechnicalIndicators | null>(null);
   const [signals, setSignals] = useState<AlgoSignal[]>([]);
   const [positions, setPositions] = useState<PaperPosition[]>([]);
   const [closedTrades, setClosedTrades] = useState<ClosedTrade[]>([]);
@@ -149,12 +150,15 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
           setCandles((prev) => {
             if (prev.length === 0) return prev;
             const updated = [...prev];
-            const lastIndex = updated.length - 1;
-            updated[lastIndex] = {
-              ...updated[lastIndex],
+            const sameSymbol = updated
+              .map((c, index) => ({ c, index }))
+              .filter(({ c }) => c.symbol === tickSymbol && c.timeframe === '1m');
+            const targetIndex = sameSymbol.length ? sameSymbol[sameSymbol.length - 1].index : updated.length - 1;
+            updated[targetIndex] = {
+              ...updated[targetIndex],
               close: tick.price,
-              high: Math.max(updated[lastIndex].high, tick.price),
-              low: Math.min(updated[lastIndex].low, tick.price),
+              high: Math.max(updated[targetIndex].high, tick.price),
+              low: Math.min(updated[targetIndex].low, tick.price),
             };
             return updated;
           });
@@ -219,7 +223,6 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
       },
     });
 
-    // Subscribe to all watchlist symbols so every card receives live data.
     service.subscribe(ALL_SYMBOLS);
 
     service.connect().catch((err) => {
@@ -281,10 +284,32 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
   }, [symbol, loadSymbolData]);
 
   useEffect(() => {
-    if (dataSource === 'REAL' && ticker) {
-      console.log('[TradingContext] Live market data active for', ticker.symbol, ticker.price);
+    if (dataSource !== 'REAL' || candles.length === 0) {
+      setIndicators(null);
+      return;
     }
-  }, [ticker, dataSource]);
+
+    const nextIndicators = analyzePriceAction(candles.filter((c) => c.symbol === symbol));
+    setIndicators(nextIndicators);
+
+    if (nextIndicators) {
+      setTicker((prev) => prev ? {
+        ...prev,
+        signalState: nextIndicators.finalBias === 'WAIT' ? 'WATCHING' : 'READY',
+        confidence: nextIndicators.confidence,
+      } : prev);
+
+      setWatchlist((prev) => prev.map((item) =>
+        item.symbol === symbol
+          ? {
+              ...item,
+              signalState: nextIndicators.finalBias === 'WAIT' ? 'WATCHING' : 'READY',
+              confidence: nextIndicators.confidence,
+            }
+          : item
+      ));
+    }
+  }, [candles, symbol, dataSource]);
 
   const takeTrade = (signal: AlgoSignal) => {
     if (signal.status !== 'READY') return;
