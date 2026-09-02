@@ -15,7 +15,6 @@ from app.ws.manager import ConnectionManager
 from app.api import health, market, websocket, trading
 from app.models.schemas import PriceSource
 
-
 structlog.configure(
     processors=[
         structlog.stdlib.filter_by_level,
@@ -42,12 +41,11 @@ algo_engine: CryptoStrategyEngine = None
 settings = get_settings()
 DEFAULT_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT"]
 
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global market_data_service, connection_manager, algo_engine
 
-    logger.info("Starting backend", version="3.2.1", mode=settings.market_data_mode)
+    logger.info("Starting backend", version="4.0.0", mode=settings.market_data_mode)
     paper_db.initialize()
     logger.info("Trading database initialized", path=str(paper_db.db_path))
 
@@ -77,8 +75,6 @@ async def lifespan(app: FastAPI):
     async def on_candle_bridge(candle):
         await original_broadcast_candle(candle)
         if candle.is_complete:
-            # Completed candle means strategy inputs changed, so force fresh evaluation.
-            algo_engine.last_evaluation_key.pop(candle.symbol, None)
             await algo_engine.on_completed_candle(candle.symbol)
 
     market_data_service._broadcast_tick_update = on_tick_bridge
@@ -87,16 +83,13 @@ async def lifespan(app: FastAPI):
     async def scanner_loop():
         while market_data_service.running:
             try:
-                # Execution guards are dynamic (engine ON/OFF, portfolio slots,
-                # daily risk). Recheck them even if candle data is unchanged.
-                # Duplicate entries remain impossible because executed signal IDs
-                # and open-position checks live in the backend engine/database.
-                algo_engine.last_evaluation_key.clear()
                 await algo_engine.scan_all_symbols()
             except Exception as exc:
                 logger.error("Algo scanner iteration failed", error=str(exc))
             await asyncio.sleep(2)
 
+    # Populate analysis immediately; entries still require ENGINE ON.
+    await algo_engine.scan_all_symbols()
     scanner_task = asyncio.create_task(scanner_loop())
     logger.info(
         "Crypto algo engine started",
@@ -117,11 +110,10 @@ async def lifespan(app: FastAPI):
     await market_data_service.stop()
     logger.info("Backend stopped")
 
-
 app = FastAPI(
     title="Delta Crypto Algo Backend",
-    description="Real-time Delta market data with backend-authoritative 15m/5m/1m paper trading engine",
-    version="3.2.1",
+    description="Delta market data with a single backend-authoritative PA MTF V4 paper trading engine",
+    version="4.0.0",
     lifespan=lifespan,
 )
 
@@ -143,24 +135,22 @@ app.include_router(market.router)
 app.include_router(websocket.router)
 app.include_router(trading.router)
 
-
 @app.get("/")
 async def root():
     return {
         "service": "Delta Crypto Algo Backend",
-        "version": "3.2.1",
+        "version": "4.0.0",
         "mode": settings.market_data_mode,
         "strategy": algo_engine.STRATEGY_VERSION if algo_engine else CryptoStrategyEngine.STRATEGY_VERSION,
         "execution": "PAPER_ONLY",
         "scanner": "ACTIVE" if algo_engine else "STARTING",
         "trading_api": "/api/trading/state",
+        "diagnostics_api": "/api/trading/diagnostics",
         "docs": "/docs",
     }
 
-
 if __name__ == "__main__":
     import uvicorn
-
     uvicorn.run(
         "app.main:app",
         host=settings.backend_host,
