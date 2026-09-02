@@ -10,6 +10,7 @@ from app.services.paper_engine import DEFAULT_TRADING_SETTINGS
 
 router = APIRouter(prefix="/api/paper", tags=["paper-trading"])
 market_data_service = None
+paper_engine = None
 
 
 class EngineStateRequest(BaseModel):
@@ -42,6 +43,7 @@ async def get_paper_state():
         "positions": paper_db.list_positions(),
         "closed_trades": paper_db.list_closed_trades(),
         "executed_signal_ids": paper_db.list_executed_signal_ids(),
+        "signals": paper_engine.get_signals() if paper_engine is not None else [],
         "settings": settings,
     }
 
@@ -108,22 +110,13 @@ async def close_position(position_id: str):
     now = int(time.time() * 1000)
 
     trade = {
-        "id": f"CLOSED-{position['id']}",
-        "symbol": symbol,
-        "side": side,
-        "entryPrice": entry,
-        "exitPrice": round(exit_price, 6),
-        "size": float(position.get("size", entry * quantity)),
-        "quantity": quantity,
-        "leverage": float(position.get("leverage", 1)),
-        "realizedPnL": round(realized, 2),
-        "realizedPnLPercent": round((realized / capital) * 100.0, 3),
-        "fees": round(fees, 2),
-        "exitReason": "MANUAL",
-        "openedAt": int(position["openedAt"]),
-        "closedAt": now,
-        "durationSeconds": max(0, (now - int(position["openedAt"])) // 1000),
-        "isWin": realized > 0,
+        "id": f"CLOSED-{position['id']}", "symbol": symbol, "side": side,
+        "entryPrice": entry, "exitPrice": round(exit_price, 6),
+        "size": float(position.get("size", entry * quantity)), "quantity": quantity,
+        "leverage": float(position.get("leverage", 1)), "realizedPnL": round(realized, 2),
+        "realizedPnLPercent": round((realized / capital) * 100.0, 3), "fees": round(fees, 2),
+        "exitReason": "MANUAL", "openedAt": int(position["openedAt"]), "closedAt": now,
+        "durationSeconds": max(0, (now - int(position["openedAt"])) // 1000), "isWin": realized > 0,
     }
     paper_db.save_closed_trade(trade)
     paper_db.delete_position(position_id)
