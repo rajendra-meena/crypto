@@ -1,21 +1,42 @@
 'use client';
 
-import React from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useTrading } from '@/context/TradingContext';
+import { loadPaperState } from '@/services/paperPersistenceService';
+import { AlgoSignal } from '@/types/trading';
 import { Cpu, AlertTriangle } from 'lucide-react';
 
 export const AlgoAnalysisPanel: React.FC = () => {
-  const { indicators, dataSource, deltaConnectionState } = useTrading();
+  const { indicators, dataSource, deltaConnectionState, symbol } = useTrading();
+  const [backendSignals, setBackendSignals] = useState<AlgoSignal[]>([]);
+
+  useEffect(() => {
+    let active = true;
+    const sync = async () => {
+      try {
+        const state = await loadPaperState();
+        if (active) setBackendSignals(Array.isArray(state.signals) ? state.signals : []);
+      } catch (error) {
+        console.error('[AlgoAnalysisPanel] Failed to sync backend signals:', error);
+      }
+    };
+    void sync();
+    const timer = window.setInterval(() => void sync(), 1000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  const backendSignal = useMemo(
+    () => backendSignals.find((signal) => signal.symbol === symbol) ?? null,
+    [backendSignals, symbol],
+  );
 
   const getBiasBadge = (bias: string) => {
-    switch (bias) {
-      case 'BUY':
-        return <span className="px-3 py-1 rounded-md bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 font-extrabold text-sm">BUY</span>;
-      case 'SELL':
-        return <span className="px-3 py-1 rounded-md bg-rose-500/20 text-rose-400 border border-rose-500/40 font-extrabold text-sm">SELL</span>;
-      default:
-        return <span className="px-3 py-1 rounded-md bg-amber-500/20 text-amber-400 border border-amber-500/40 font-extrabold text-sm">WAIT</span>;
-    }
+    if (bias === 'BUY') return <span className="px-3 py-1 rounded-md bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 font-extrabold text-sm">BUY</span>;
+    if (bias === 'SELL') return <span className="px-3 py-1 rounded-md bg-rose-500/20 text-rose-400 border border-rose-500/40 font-extrabold text-sm">SELL</span>;
+    return <span className="px-3 py-1 rounded-md bg-amber-500/20 text-amber-400 border border-amber-500/40 font-extrabold text-sm">WAIT</span>;
   };
 
   if (!indicators) {
@@ -29,21 +50,11 @@ export const AlgoAnalysisPanel: React.FC = () => {
     );
   }
 
-  const getDataSourceBadge = () => {
-    if (dataSource === 'REAL') {
-      return (
-        <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/40">
-          LIVE PRICE ACTION
-        </span>
-      );
-    }
-
-    return (
-      <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-amber-500/20 text-amber-400 border border-amber-500/40">
-        STALE DATA · ANALYSIS PAUSED
-      </span>
-    );
-  };
+  const executionBias = backendSignal && (backendSignal.status === 'READY' || backendSignal.status === 'EXECUTED')
+    ? backendSignal.side
+    : 'WAIT';
+  const executionScore = backendSignal?.confidence ?? 0;
+  const executionStatus = backendSignal?.status ?? 'WATCHING';
 
   return (
     <div className="bg-zinc-950 border border-zinc-800/80 rounded-2xl p-5 flex flex-col justify-between">
@@ -54,61 +65,53 @@ export const AlgoAnalysisPanel: React.FC = () => {
             <h3 className="font-bold text-zinc-100 text-sm tracking-wide uppercase">Price Action Engine</h3>
           </div>
           <div className="flex items-center gap-2">
-            {getDataSourceBadge()}
+            <span className={`text-[11px] font-mono px-2 py-0.5 rounded border ${dataSource === 'REAL' ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/40' : 'bg-amber-500/20 text-amber-400 border-amber-500/40'}`}>
+              {dataSource === 'REAL' ? 'LIVE ANALYSIS' : 'STALE DATA'}
+            </span>
             {deltaConnectionState === 'STALE' && (
               <span className="flex items-center gap-1 px-2 py-0.5 rounded bg-amber-500/20 text-amber-400 border border-amber-500/40 text-[10px] font-bold">
-                <AlertTriangle className="h-3 w-3" />
-                STALE
+                <AlertTriangle className="h-3 w-3" /> STALE
               </span>
             )}
           </div>
         </div>
 
         <div className="space-y-2.5 text-xs">
-          <div className="flex justify-between items-center py-1 border-b border-zinc-900">
-            <span className="text-zinc-400">Market Trend</span>
-            <span className="font-semibold text-zinc-200">{indicators.marketTrend.replace(/_/g, ' ')}</span>
-          </div>
-          <div className="flex justify-between items-center py-1 border-b border-zinc-900">
-            <span className="text-zinc-400">Market Structure</span>
-            <span className="font-semibold text-zinc-200">{indicators.marketStructure.replace(/_/g, ' ')}</span>
-          </div>
-          <div className="flex justify-between items-center py-1 border-b border-zinc-900">
-            <span className="text-zinc-400">Momentum</span>
-            <span className="font-semibold text-zinc-200">{indicators.momentum}</span>
-          </div>
-          <div className="flex justify-between items-center py-1 border-b border-zinc-900">
-            <span className="text-zinc-400">Volatility</span>
-            <span className="font-semibold text-zinc-200">{indicators.volatility}</span>
-          </div>
-          <div className="flex justify-between items-center py-1 border-b border-zinc-900">
-            <span className="text-zinc-400">Volume Strength</span>
-            <span className="font-semibold text-zinc-200">{indicators.volumeStrength}</span>
-          </div>
-          <div className="flex justify-between items-center py-1 border-b border-zinc-900">
-            <span className="text-zinc-400">Support / Resistance</span>
-            <span className="font-mono text-zinc-300">${indicators.support} / ${indicators.resistance}</span>
-          </div>
-          <div className="flex justify-between items-center py-1 border-b border-zinc-900">
-            <span className="text-zinc-400">RSI (context)</span>
-            <span className="font-mono font-bold text-emerald-400">{indicators.rsi}</span>
-          </div>
-          <div className="flex justify-between items-center py-1 border-b border-zinc-900">
-            <span className="text-zinc-400">MACD Histogram (context)</span>
-            <span className="font-mono font-bold text-zinc-200">{indicators.macd.histogram}</span>
-          </div>
+          <div className="flex justify-between items-center py-1 border-b border-zinc-900"><span className="text-zinc-400">Market Trend</span><span className="font-semibold text-zinc-200">{indicators.marketTrend.replace(/_/g, ' ')}</span></div>
+          <div className="flex justify-between items-center py-1 border-b border-zinc-900"><span className="text-zinc-400">Market Structure</span><span className="font-semibold text-zinc-200">{indicators.marketStructure.replace(/_/g, ' ')}</span></div>
+          <div className="flex justify-between items-center py-1 border-b border-zinc-900"><span className="text-zinc-400">Momentum</span><span className="font-semibold text-zinc-200">{indicators.momentum}</span></div>
+          <div className="flex justify-between items-center py-1 border-b border-zinc-900"><span className="text-zinc-400">Volatility</span><span className="font-semibold text-zinc-200">{indicators.volatility}</span></div>
+          <div className="flex justify-between items-center py-1 border-b border-zinc-900"><span className="text-zinc-400">Volume Strength</span><span className="font-semibold text-zinc-200">{indicators.volumeStrength}</span></div>
+          <div className="flex justify-between items-center py-1 border-b border-zinc-900"><span className="text-zinc-400">Support / Resistance</span><span className="font-mono text-zinc-300">${indicators.support} / ${indicators.resistance}</span></div>
+          <div className="flex justify-between items-center py-1 border-b border-zinc-900"><span className="text-zinc-400">RSI (context)</span><span className="font-mono font-bold text-emerald-400">{indicators.rsi}</span></div>
+          <div className="flex justify-between items-center py-1 border-b border-zinc-900"><span className="text-zinc-400">MACD Histogram (context)</span><span className="font-mono font-bold text-zinc-200">{indicators.macd.histogram}</span></div>
         </div>
       </div>
 
-      <div className="mt-5 p-4 rounded-xl bg-zinc-900/80 border border-zinc-800 flex items-center justify-between">
-        <div>
-          <div className="text-[11px] text-zinc-400 uppercase font-bold tracking-wider mb-1">Price Action Bias</div>
-          {getBiasBadge(indicators.finalBias)}
+      <div className="mt-5 space-y-2">
+        <div className="p-3 rounded-xl bg-zinc-900/60 border border-zinc-800 flex items-center justify-between">
+          <div>
+            <div className="text-[10px] text-zinc-500 uppercase font-bold tracking-wider mb-1">Live Forming-Candle Bias</div>
+            {getBiasBadge(indicators.finalBias)}
+          </div>
+          <div className="text-right">
+            <div className="text-[10px] text-zinc-500 uppercase font-bold tracking-wider mb-1">Live Score</div>
+            <div className="font-mono text-base font-bold text-zinc-300">{indicators.confidence}%</div>
+            <div className="text-[9px] text-zinc-600 mt-1">Informational only · not an entry trigger</div>
+          </div>
         </div>
-        <div className="text-right">
-          <div className="text-[11px] text-zinc-400 uppercase font-bold tracking-wider mb-1">Confidence</div>
-          <div className="font-mono text-lg font-extrabold text-emerald-400">{indicators.confidence}%</div>
-          <div className="text-[10px] text-zinc-500 mt-1">Calculated from live candle structure</div>
+
+        <div className="p-4 rounded-xl bg-zinc-900/80 border border-zinc-700 flex items-center justify-between">
+          <div>
+            <div className="text-[11px] text-zinc-400 uppercase font-bold tracking-wider mb-1">Executable Backend Signal</div>
+            {getBiasBadge(executionBias)}
+            <div className="text-[10px] text-zinc-500 mt-2">Status: {executionStatus}</div>
+          </div>
+          <div className="text-right">
+            <div className="text-[11px] text-zinc-400 uppercase font-bold tracking-wider mb-1">Setup Score</div>
+            <div className="font-mono text-lg font-extrabold text-emerald-400">{executionScore}%</div>
+            <div className="text-[10px] text-zinc-500 mt-1">Completed-candle backend confirmation</div>
+          </div>
         </div>
       </div>
     </div>
