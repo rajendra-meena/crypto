@@ -2,7 +2,6 @@ import asyncio
 import logging
 import sys
 from contextlib import asynccontextmanager
-from typing import List
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,10 +10,11 @@ import structlog
 from app.core.config import get_settings
 from app.core.database import paper_db
 from app.services.market_data import MarketDataService
+from app.services.paper_engine import PaperTradingEngine
 from app.ws.manager import ConnectionManager
 from app.api import health, market, websocket, paper
+from app.models.schemas import PriceSource
 
-# Configure structured logging
 structlog.configure(
     processors=[
         structlog.stdlib.filter_by_level,
@@ -25,23 +25,19 @@ structlog.configure(
         structlog.processors.StackInfoRenderer(),
         structlog.processors.format_exc_info,
         structlog.processors.UnicodeDecoder(),
-        structlog.processors.JSONRenderer()
+        structlog.processors.JSONRenderer(),
     ],
     context_class=dict,
     logger_factory=structlog.stdlib.LoggerFactory(),
     cache_logger_on_first_use=True,
 )
 
-logging.basicConfig(
-    format="%(message)s",
-    stream=sys.stdout,
-    level=logging.INFO,
-)
-
+logging.basicConfig(format="%(message)s", stream=sys.stdout, level=logging.INFO)
 logger = structlog.get_logger()
 
 market_data_service: MarketDataService = None
 connection_manager: ConnectionManager = None
+paper_engine: PaperTradingEngine = None
 settings = get_settings()
 
 DEFAULT_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT"]
@@ -49,11 +45,10 @@ DEFAULT_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT"]
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global market_data_service, connection_manager
+    global market_data_service, connection_manager, paper_engine
 
-    logger.info("Starting backend", version="2.0.0", mode=settings.market_data_mode)
+    logger.info("Starting backend", version="2.1.0", mode=settings.market_data_mode)
 
-    # Persistent paper-trading state must be ready before the frontend hydrates.
     paper_db.initialize()
     logger.info("Paper trading database initialized", path=str(paper_db.db_path))
 
@@ -67,20 +62,25 @@ async def lifespan(app: FastAPI):
     websocket.market_data_service = market_data_service
 
     await market_data_service.start(DEFAULT_SYMBOLS)
+    paper_engine = PaperTradingEngine(market_data_service)
 
     original_broadcast = connection_manager.broadcast_tick
     original_broadcast_candle = connection_manager.broadcast_candle
 
     async def on_tick_bridge(tick):
         await original_broadcast(tick)
+        if tick.price_source in (PriceSource.LAST_TRADED, PriceSource.SPOT_PRICE):
+            await paper_engine.on_tick(tick.symbol, float(tick.price))
 
     async def on_candle_bridge(candle):
         await original_broadcast_candle(candle)
+        if candle.is_complete:
+            await paper_engine.on_completed_candle(candle.symbol)
 
     market_data_service._broadcast_candle_update = on_candle_bridge
     market_data_service._broadcast_tick_update = on_tick_bridge
 
-    logger.info("Backend started successfully")
+    logger.info("Backend strategy engine started", symbols=DEFAULT_SYMBOLS)
 
     yield
 
@@ -91,8 +91,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Delta Algo Terminal - Market Data Backend",
-    description="Real-time Delta Exchange market data via WebSocket",
-    version="2.0.0",
+    description="Real-time Delta market data with backend-owned paper strategy/risk engine",
+    version="2.1.0",
     lifespan=lifespan,
 )
 
@@ -119,14 +119,16 @@ app.include_router(paper.router)
 async def root():
     return {
         "service": "Delta Algo Terminal Backend",
-        "version": "2.0.0",
+        "version": "2.1.0",
         "mode": settings.market_data_mode,
+        "paper_engine": "BACKEND",
         "docs": "/docs",
     }
 
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(
         "app.main:app",
         host=settings.backend_host,
