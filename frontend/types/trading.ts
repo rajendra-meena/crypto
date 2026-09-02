@@ -37,13 +37,10 @@ export interface MarketTick {
   volume?: number;
 }
 
+// Kept for chart/component compatibility. Trading decisions do NOT use this frontend type.
 export interface TechnicalIndicators {
   rsi: number;
-  macd: {
-    macdLine: number;
-    signalLine: number;
-    histogram: number;
-  };
+  macd: { macdLine: number; signalLine: number; histogram: number };
   emaTrend: 'ABOVE_200_EMA' | 'BELOW_200_EMA' | 'CONSOLIDATING';
   support: number;
   resistance: number;
@@ -54,6 +51,26 @@ export interface TechnicalIndicators {
   marketStructure: 'BREAKOUT' | 'RANGE_BOUND' | 'TRENDING_UP' | 'TRENDING_DOWN';
   confidence: number;
   finalBias: 'BUY' | 'SELL' | 'WAIT';
+}
+
+export interface BackendAnalysis {
+  symbol: SymbolKey;
+  bias: 'BUY' | 'SELL' | 'WAIT';
+  status: SignalStatus;
+  setupScore: number;
+  timeframe: string;
+  trend: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+  setup: 'BREAKOUT' | 'BREAKDOWN' | 'PULLBACK_RECLAIM' | 'PULLBACK_REJECT' | 'NONE';
+  trigger: 'LONG_CONFIRM' | 'SHORT_CONFIRM' | 'NONE';
+  rsi: number;
+  atrPct: number;
+  volumeRatio: number;
+  support: number;
+  resistance: number;
+  reason: string;
+  updatedAt: number;
+  setupCandleTime?: number;
+  referencePrice?: number;
 }
 
 export interface AlgoSignal {
@@ -68,6 +85,7 @@ export interface AlgoSignal {
   riskReward: string;
   confidence: number;
   generatedTime: string;
+  generatedAt?: number;
   reason: string;
   status: SignalStatus;
 }
@@ -80,13 +98,19 @@ export interface PaperPosition {
   entryPrice: number;
   currentPrice: number;
   stopLoss: number;
+  initialStopLoss?: number;
   target1: number;
   target2: number;
   leverage: number;
+  quantity?: number;
   size: number;
   margin: number;
   unrealizedPnL: number;
   unrealizedPnLPercent: number;
+  initialRisk?: number;
+  initialRiskAmount?: number;
+  rMultiple?: number;
+  managementStage?: 'INITIAL' | 'BREAKEVEN' | 'TRAILING';
   openedAt: number;
 }
 
@@ -104,15 +128,60 @@ export interface ClosedTrade {
   closedAt: number;
   durationSeconds: number;
   isWin: boolean;
+  fees?: number;
+  exitReason?: string;
 }
 
 export interface TerminalSettings {
   capital: number;
   riskPerTradePct: number;
   maxDailyLossPct: number;
+  maxPortfolioRiskPct: number;
   maxConcurrentTrades: number;
   maxLeverage: number;
+  minSetupScore: number;
+  maxTradesPerDay: number;
+  maxConsecutiveLosses: number;
+  cooldownMinutes: number;
+  atrStopMultiplier: number;
+  targetRR: number;
+  feeRatePct: number;
+  slippagePct: number;
+  maxEntryDriftPct: number;
+  minStopPct: number;
+  maxStopPct: number;
+  breakevenAtR: number;
+  trailingStartR: number;
+  trailingDistanceR: number;
+  maxHoldMinutes: number;
+  minAtrPct: number;
+  maxAtrPct: number;
   isLiveMode: boolean;
   apiKey: string;
   apiSecret: string;
+}
+
+export interface RiskSnapshot {
+  todayTrades: number;
+  todayRealizedPnL: number;
+  consecutiveLosses: number;
+  openPositions: number;
+  openRisk: number;
+  maxDailyLoss: number;
+  maxPortfolioRisk: number;
+  blocked: boolean;
+  blockReason: string | null;
+}
+
+export interface TradingApiState {
+  engine_running: boolean;
+  mode: 'PAPER';
+  strategy: string;
+  positions: PaperPosition[];
+  closed_trades: ClosedTrade[];
+  executed_signal_ids: string[];
+  analyses: BackendAnalysis[];
+  signals: AlgoSignal[];
+  risk: RiskSnapshot;
+  settings: Record<string, unknown>;
 }
