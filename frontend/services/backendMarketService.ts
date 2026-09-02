@@ -151,11 +151,18 @@ export class BackendMarketService {
         return;
       }
 
-      if (this.isConnecting) {
+      if (this.isConnecting && this.ws?.readyState === WebSocket.CONNECTING) {
+        const startedAt = Date.now();
         const checkConnection = setInterval(() => {
           if (this.ws?.readyState === WebSocket.OPEN) {
             clearInterval(checkConnection);
             resolve();
+            return;
+          }
+
+          if (!this.isConnecting || Date.now() - startedAt > 10000) {
+            clearInterval(checkConnection);
+            reject(new Error('WebSocket connection attempt was cancelled or timed out'));
           }
         }, 100);
         return;
@@ -166,9 +173,15 @@ export class BackendMarketService {
       this._updateBackendState('CONNECTING');
 
       try {
-        this.ws = new WebSocket(this.url);
+        const socket = new WebSocket(this.url);
+        this.ws = socket;
 
-        this.ws.onopen = () => {
+        socket.onopen = () => {
+          if (this.ws !== socket) {
+            socket.close();
+            return;
+          }
+
           this.isConnecting = false;
           this.reconnectAttempts = 0;
           this.reconnectDelay = 1000;
@@ -186,11 +199,15 @@ export class BackendMarketService {
           resolve();
         };
 
-        this.ws.onmessage = (event) => {
+        socket.onmessage = (event) => {
+          if (this.ws !== socket) return;
           this._handleMessage(event.data);
         };
 
-        this.ws.onclose = () => {
+        socket.onclose = () => {
+          if (this.ws !== socket) return;
+
+          this.ws = null;
           this.isConnecting = false;
           this._updateBackendState('DISCONNECTED');
           this._updateDeltaState('DISCONNECTED');
@@ -198,10 +215,12 @@ export class BackendMarketService {
           this._attemptReconnect();
         };
 
-        this.ws.onerror = () => {
+        socket.onerror = () => {
+          if (this.ws !== socket) return;
+
           this.isConnecting = false;
           this._updateBackendState('DISCONNECTED');
-          this.onError?.('WebSocket connection error');
+          this.onError?.(`WebSocket connection error: ${this.url}`);
         };
       } catch (err) {
         this.isConnecting = false;
@@ -238,6 +257,7 @@ export class BackendMarketService {
     this._updateBackendState('RECONNECTING');
 
     setTimeout(() => {
+      if (!this.shouldReconnect) return;
       this.connect().catch(() => undefined);
     }, this.reconnectDelay);
 
@@ -246,11 +266,23 @@ export class BackendMarketService {
 
   disconnect() {
     this.shouldReconnect = false;
+    this.isConnecting = false;
     this._stopHealthPolling();
-    if (this.ws) {
-      this.ws.close();
-      this.ws = null;
+
+    const socket = this.ws;
+    this.ws = null;
+
+    if (socket) {
+      socket.onopen = null;
+      socket.onmessage = null;
+      socket.onerror = null;
+      socket.onclose = null;
+
+      if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+        socket.close();
+      }
     }
+
     this._updateBackendState('DISCONNECTED');
     this._updateDeltaState('DISCONNECTED');
   }
