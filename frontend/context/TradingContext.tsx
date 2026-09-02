@@ -16,6 +16,14 @@ import {
   BackendMarketService,
 } from '@/services/backendMarketService';
 import { analyzePriceAction } from '@/services/priceActionAnalysis';
+import {
+  deletePaperPosition,
+  loadPaperState,
+  markSignalExecuted,
+  saveClosedTrade,
+  saveEngineState,
+  savePaperPosition,
+} from '@/services/paperPersistenceService';
 
 const DEFAULT_SETTINGS: TerminalSettings = {
   capital: 10000,
@@ -57,6 +65,7 @@ interface TradingContextType {
   signals: AlgoSignal[];
   positions: PaperPosition[];
   closedTrades: ClosedTrade[];
+  executedSignalIds: string[];
   settings: TerminalSettings;
   updateSettings: (newSettings: Partial<TerminalSettings>) => void;
   takeTrade: (signal: AlgoSignal) => void;
@@ -87,7 +96,7 @@ function assertRealMode(dataSource: 'REAL' | 'MOCK' | 'STALE', context: string) 
 export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [symbol, setSymbolState] = useState<SymbolKey>('BTCUSDT');
   const symbolRef = useRef<SymbolKey>('BTCUSDT');
-  const [isEngineRunning, setEngineRunning] = useState(false);
+  const [isEngineRunning, setEngineRunningState] = useState(false);
   const [ticker, setTicker] = useState<TickerData>(() => createTicker('BTCUSDT'));
   const [watchlist, setWatchlist] = useState<TickerData[]>(() => ALL_SYMBOLS.map((s) => createTicker(s)));
   const [candles, setCandles] = useState<Candle[]>([]);
@@ -95,6 +104,7 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const [signals, setSignals] = useState<AlgoSignal[]>([]);
   const [positions, setPositions] = useState<PaperPosition[]>([]);
   const [closedTrades, setClosedTrades] = useState<ClosedTrade[]>([]);
+  const [executedSignalIds, setExecutedSignalIds] = useState<string[]>([]);
   const [settings, setSettings] = useState<TerminalSettings>(DEFAULT_SETTINGS);
 
   const [backendConnectionState, setBackendConnectionState] = useState<'CONNECTING' | 'CONNECTED' | 'RECONNECTING' | 'DISCONNECTED'>('CONNECTING');
@@ -104,10 +114,18 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
   const [isMarketDataStale, setIsMarketDataStale] = useState(false);
 
   const backendServiceRef = useRef<BackendMarketService | null>(null);
+  const paperStateHydratedRef = useRef(false);
 
   const isMarketDataLiveComputed = deltaConnectionState === 'CONNECTED';
   const isMarketDataStaleComputed = deltaConnectionState === 'STALE' || deltaConnectionState === 'DISCONNECTED';
   const canTrade = isMarketDataLiveComputed && isEngineRunning;
+
+  const setEngineRunning = useCallback((val: boolean) => {
+    setEngineRunningState(val);
+    void saveEngineState(val).catch((error) => {
+      console.error('[TradingContext] Failed to persist engine state:', error);
+    });
+  }, []);
 
   useEffect(() => {
     setIsMarketDataLive(isMarketDataLiveComputed);
@@ -237,6 +255,23 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
   }, []);
 
   useEffect(() => {
+    if (backendConnectionState !== 'CONNECTED' || paperStateHydratedRef.current) return;
+
+    paperStateHydratedRef.current = true;
+    void loadPaperState()
+      .then((state) => {
+        setEngineRunningState(Boolean(state.engine_running));
+        setPositions(Array.isArray(state.positions) ? state.positions : []);
+        setClosedTrades(Array.isArray(state.closed_trades) ? state.closed_trades : []);
+        setExecutedSignalIds(Array.isArray(state.executed_signal_ids) ? state.executed_signal_ids : []);
+      })
+      .catch((error) => {
+        paperStateHydratedRef.current = false;
+        console.error('[TradingContext] Failed to restore paper state from database:', error);
+      });
+  }, [backendConnectionState]);
+
+  useEffect(() => {
     try {
       const saved = localStorage.getItem('DELTA_ALGO_SETTINGS');
       if (saved) setSettings({ ...DEFAULT_SETTINGS, ...JSON.parse(saved) });
@@ -311,13 +346,17 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
     }
   }, [candles, symbol, dataSource]);
 
-  const takeTrade = (signal: AlgoSignal) => {
+  const takeTrade = useCallback((signal: AlgoSignal) => {
     if (signal.status !== 'READY') return;
     if (!canTrade) {
       console.error(`[TradingContext] Trade BLOCKED: market data not live (delta: ${deltaConnectionState}, engine: ${isEngineRunning})`);
       alert(`Cannot take trade: Market data is ${deltaConnectionState}. Real market data required.`);
       return;
     }
+
+    if (executedSignalIds.includes(signal.id)) return;
+    if (positions.some((position) => position.symbol === signal.symbol)) return;
+    if (positions.length >= settings.maxConcurrentTrades) return;
 
     const size = (settings.capital * (settings.riskPerTradePct / 100)) * settings.maxLeverage;
     const margin = size / settings.maxLeverage;
@@ -328,7 +367,7 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
       symbol: signal.symbol,
       side: signal.side,
       entryPrice: signal.entry,
-      currentPrice: ticker?.price || signal.entry,
+      currentPrice: ticker?.symbol === signal.symbol ? ticker.price : signal.entry,
       stopLoss: signal.stopLoss,
       target1: signal.target1,
       target2: signal.target2,
@@ -341,10 +380,18 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
     };
 
     setPositions((prev) => [newPosition, ...prev]);
+    setExecutedSignalIds((prev) => prev.includes(signal.id) ? prev : [signal.id, ...prev]);
     setSignals((prev) => prev.map((s) => (s.id === signal.id ? { ...s, status: 'EXECUTED' } : s)));
-  };
 
-  const closePosition = (positionId: string) => {
+    void Promise.all([
+      savePaperPosition(newPosition),
+      markSignalExecuted(signal.id, signal.symbol),
+    ]).catch((error) => {
+      console.error('[TradingContext] Failed to persist paper trade:', error);
+    });
+  }, [canTrade, deltaConnectionState, isEngineRunning, executedSignalIds, positions, settings, ticker]);
+
+  const closePosition = useCallback((positionId: string) => {
     const pos = positions.find((p) => p.id === positionId);
     if (!pos) return;
 
@@ -371,7 +418,14 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
 
     setClosedTrades((prev) => [closedRecord, ...prev]);
     setPositions((prev) => prev.filter((p) => p.id !== positionId));
-  };
+
+    void Promise.all([
+      saveClosedTrade(closedRecord),
+      deletePaperPosition(positionId),
+    ]).catch((error) => {
+      console.error('[TradingContext] Failed to persist closed paper trade:', error);
+    });
+  }, [positions]);
 
   const performanceMetrics = {
     totalTrades: closedTrades.length,
@@ -398,6 +452,7 @@ export const TradingProvider: React.FC<{ children: React.ReactNode }> = ({ child
         signals,
         positions,
         closedTrades,
+        executedSignalIds,
         settings,
         updateSettings,
         takeTrade,
