@@ -1,72 +1,34 @@
 'use client';
 
-import React, { useMemo } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useTrading } from '@/context/TradingContext';
+import { loadPaperState } from '@/services/paperPersistenceService';
 import { ArrowUpRight, ArrowDownRight, Zap } from 'lucide-react';
-import { AlgoSignal, Candle } from '@/types/trading';
-
-const roundPrice = (value: number) => {
-  if (value < 10) return Number(value.toFixed(4));
-  if (value < 100) return Number(value.toFixed(3));
-  return Number(value.toFixed(2));
-};
-
-const getAnalysisSeries = (candles: Candle[]) => {
-  for (const timeframe of ['15m', '5m', '1m']) {
-    const series = candles
-      .filter((c) => c.timeframe === timeframe)
-      .sort((a, b) => a.time - b.time);
-    if (series.length >= 20) return { timeframe, series };
-  }
-  const series = [...candles].sort((a, b) => a.time - b.time);
-  return { timeframe: series.at(-1)?.timeframe || '1m', series };
-};
+import { AlgoSignal } from '@/types/trading';
 
 export const SignalSection: React.FC = () => {
-  const { signals, symbol, ticker, candles, indicators, positions, executedSignalIds, settings, canTrade } = useTrading();
+  const { settings, canTrade } = useTrading();
+  const [backendSignals, setBackendSignals] = useState<AlgoSignal[]>([]);
 
-  const priceActionSignal = useMemo<AlgoSignal | null>(() => {
-    if (!indicators || !ticker || ticker.price <= 0 || indicators.finalBias === 'WAIT') return null;
+  useEffect(() => {
+    let active = true;
 
-    const symbolCandles = candles.filter((c) => c.symbol === symbol);
-    const { timeframe, series } = getAnalysisSeries(symbolCandles);
-    const latest = series.at(-1);
-    if (!latest) return null;
-
-    const entry = ticker.price;
-    const isBuy = indicators.finalBias === 'BUY';
-    const structureRisk = isBuy ? entry - indicators.support : indicators.resistance - entry;
-    const minRisk = entry * 0.003;
-    const maxRisk = entry * 0.015;
-    const risk = Math.min(maxRisk, Math.max(minRisk, structureRisk > 0 ? structureRisk : minRisk));
-    const stopLoss = isBuy ? entry - risk : entry + risk;
-    const target1 = isBuy ? entry + risk * 1.5 : entry - risk * 1.5;
-    const target2 = isBuy ? entry + risk * 2.5 : entry - risk * 2.5;
-
-    const id = `PA-${symbol}-${timeframe}-${latest.time}-${indicators.finalBias}`;
-    const wasExecuted = executedSignalIds.includes(id) || positions.some((p) => p.signalId === id);
-
-    return {
-      id,
-      symbol,
-      side: indicators.finalBias,
-      timeframe,
-      entry: roundPrice(entry),
-      stopLoss: roundPrice(stopLoss),
-      target1: roundPrice(target1),
-      target2: roundPrice(target2),
-      riskReward: '1:2.5',
-      confidence: indicators.confidence,
-      generatedTime: new Date(latest.time).toLocaleTimeString(),
-      reason: `Price action: ${indicators.marketStructure.replace(/_/g, ' ')} · ${indicators.marketTrend.replace(/_/g, ' ')} · ${indicators.momentum.toLowerCase()} momentum`,
-      status: wasExecuted ? 'EXECUTED' : 'READY',
+    const sync = async () => {
+      try {
+        const state = await loadPaperState();
+        if (active) setBackendSignals(Array.isArray(state.signals) ? state.signals : []);
+      } catch (error) {
+        console.error('[SignalSection] Failed to sync backend signals:', error);
+      }
     };
-  }, [indicators, ticker, candles, symbol, positions, executedSignalIds]);
 
-  const visibleSignals = useMemo(() => {
-    if (!priceActionSignal) return signals;
-    return [priceActionSignal, ...signals.filter((signal) => signal.id !== priceActionSignal.id)].slice(0, 20);
-  }, [priceActionSignal, signals]);
+    void sync();
+    const timer = window.setInterval(() => void sync(), 1000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   return (
     <div className="bg-zinc-950 border border-zinc-800/80 rounded-2xl p-5">
@@ -76,7 +38,7 @@ export const SignalSection: React.FC = () => {
           <h3 className="font-bold text-zinc-100 text-base">Algo Trading Signals</h3>
         </div>
         <span className="text-xs text-zinc-400">
-          {settings.isLiveMode ? 'Live execution disabled' : 'Paper auto execution · backend managed'}
+          {settings.isLiveMode ? 'Live execution disabled' : 'Backend scanner · authoritative signals'}
         </span>
       </div>
 
@@ -85,32 +47,54 @@ export const SignalSection: React.FC = () => {
           <thead>
             <tr className="border-b border-zinc-800 text-zinc-400 uppercase font-mono text-[11px]">
               <th className="pb-3 px-3">Coin</th><th className="pb-3 px-3">Action</th><th className="pb-3 px-3">Timeframe</th>
-              <th className="pb-3 px-3">Entry</th><th className="pb-3 px-3">Stop Loss</th><th className="pb-3 px-3">Target 1 & 2</th>
+              <th className="pb-3 px-3">Entry</th><th className="pb-3 px-3">Stop Loss</th><th className="pb-3 px-3">Target</th>
               <th className="pb-3 px-3">R:R</th><th className="pb-3 px-3">Setup Score</th><th className="pb-3 px-3">Time</th>
               <th className="pb-3 px-3">Reason</th><th className="pb-3 px-3">Status</th><th className="pb-3 px-3 text-right">Execution</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-zinc-900 font-mono">
-            {visibleSignals.map((sig) => {
+            {backendSignals.map((sig) => {
               const isBuy = sig.side === 'BUY';
-              const isReady = sig.status === 'READY';
+              const statusClass = sig.status === 'EXECUTED'
+                ? 'bg-blue-950 text-blue-400 border-blue-800'
+                : sig.status === 'READY'
+                  ? 'bg-emerald-950 text-emerald-400 border-emerald-800'
+                  : sig.status === 'BLOCKED'
+                    ? 'bg-amber-950 text-amber-400 border-amber-800'
+                    : 'bg-zinc-900 text-zinc-400 border-zinc-700';
+
               return (
                 <tr key={sig.id} className="hover:bg-zinc-900/40 transition">
                   <td className="py-3 px-3 font-sans font-bold text-zinc-200">{sig.symbol}</td>
-                  <td className="py-3 px-3"><span className={`inline-flex items-center gap-1 font-bold px-2 py-0.5 rounded text-[11px] ${isBuy ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'}`}>{isBuy ? <ArrowUpRight className="h-3 w-3" /> : <ArrowDownRight className="h-3 w-3" />}{sig.side}</span></td>
+                  <td className="py-3 px-3">
+                    <span className={`inline-flex items-center gap-1 font-bold px-2 py-0.5 rounded text-[11px] ${isBuy ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'}`}>
+                      {isBuy ? <ArrowUpRight className="h-3 w-3" /> : <ArrowDownRight className="h-3 w-3" />}{sig.side}
+                    </span>
+                  </td>
                   <td className="py-3 px-3 text-zinc-300">{sig.timeframe}</td>
                   <td className="py-3 px-3 text-zinc-200">${sig.entry}</td>
                   <td className="py-3 px-3 text-rose-400">${sig.stopLoss}</td>
-                  <td className="py-3 px-3 text-emerald-400">${sig.target1} / ${sig.target2}</td>
+                  <td className="py-3 px-3 text-emerald-400">${sig.target1}</td>
                   <td className="py-3 px-3 text-zinc-300">{sig.riskReward}</td>
                   <td className="py-3 px-3 font-bold text-zinc-200">{sig.confidence}%</td>
                   <td className="py-3 px-3 text-zinc-400 text-[11px]">{sig.generatedTime}</td>
-                  <td className="py-3 px-3 text-zinc-500 text-[11px] max-w-[220px] truncate" title={sig.reason}>{sig.reason}</td>
-                  <td className="py-3 px-3"><span className={`px-2 py-0.5 rounded text-[10px] font-bold ${isReady ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-blue-950 text-blue-400 border border-blue-800'}`}>{sig.status}</span></td>
-                  <td className="py-3 px-3 text-right"><span className={canTrade ? 'text-emerald-400 text-xs' : 'text-amber-400 text-xs'}>{canTrade ? 'BACKEND AUTO' : 'WAITING'}</span></td>
+                  <td className="py-3 px-3 text-zinc-500 text-[11px] max-w-[280px] truncate" title={sig.reason}>{sig.reason}</td>
+                  <td className="py-3 px-3"><span className={`px-2 py-0.5 rounded border text-[10px] font-bold ${statusClass}`}>{sig.status}</span></td>
+                  <td className="py-3 px-3 text-right">
+                    <span className={sig.status === 'EXECUTED' ? 'text-blue-400 text-xs' : sig.status === 'READY' && canTrade ? 'text-emerald-400 text-xs' : 'text-zinc-500 text-xs'}>
+                      {sig.status === 'EXECUTED' ? 'AUTO EXECUTED' : sig.status === 'READY' && canTrade ? 'AUTO' : sig.status}
+                    </span>
+                  </td>
                 </tr>
               );
             })}
+            {backendSignals.length === 0 && (
+              <tr>
+                <td colSpan={12} className="py-8 text-center text-zinc-500 font-sans">
+                  No backend-confirmed setup right now. Scanner is waiting for a completed-candle setup.
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
       </div>
