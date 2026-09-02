@@ -21,6 +21,8 @@ DEFAULT_TRADING_SETTINGS: Dict[str, Any] = {
     "slippagePct": 0.02,
 }
 
+TIMEFRAME_MS = {"1m": 60_000, "5m": 300_000, "15m": 900_000}
+
 
 def _ema(values: List[float], period: int) -> float:
     if not values:
@@ -50,16 +52,16 @@ def _atr(candles: List[Any], period: int = 14) -> float:
 
 def _today_start_ms() -> int:
     now = datetime.now(timezone.utc)
-    start = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
-    return int(start.timestamp() * 1000)
+    return int(datetime(now.year, now.month, now.day, tzinfo=timezone.utc).timestamp() * 1000)
 
 
 class PaperTradingEngine:
-    """Backend-owned multi-symbol PAPER strategy, risk and execution engine."""
+    """Backend-owned multi-symbol PAPER strategy/risk/execution engine."""
 
     def __init__(self, market_data_service: Any):
         self.market_data_service = market_data_service
         self.last_signal_candle: Dict[str, int] = {}
+        self.latest_signals: Dict[str, Dict[str, Any]] = {}
 
     def get_settings(self) -> Dict[str, Any]:
         saved = paper_db.get_trading_settings()
@@ -67,6 +69,9 @@ class PaperTradingEngine:
         if saved:
             merged.update(saved)
         return merged
+
+    def get_signals(self) -> List[Dict[str, Any]]:
+        return sorted(self.latest_signals.values(), key=lambda s: int(s.get("generatedAt", 0)), reverse=True)[:20]
 
     def _series(self, symbol: str) -> Tuple[str, List[Any]]:
         state = self.market_data_service.symbol_states.get(symbol)
@@ -89,6 +94,11 @@ class PaperTradingEngine:
         recent = candles[-30:]
         current = recent[-1]
         prior = recent[:-1]
+        now_ms = int(time.time() * 1000)
+        max_age = TIMEFRAME_MS.get(timeframe, 60_000) * 2.5
+        if now_ms - int(current.timestamp) > max_age:
+            return None
+
         closes = [float(c.close) for c in recent]
         ema9 = _ema(closes, 9)
         ema20 = _ema(closes, 20)
@@ -105,7 +115,6 @@ class PaperTradingEngine:
         bullish = sum(1 for c in last6 if float(c.close) > float(c.open))
         bearish = sum(1 for c in last6 if float(c.close) < float(c.open))
         move_pct = ((float(current.close) - float(last6[0].open)) / max(float(last6[0].open), 1e-9)) * 100.0
-
         volumes = [float(c.volume or 0) for c in prior[-20:]]
         avg_volume = sum(volumes) / len(volumes) if volumes else 0.0
         volume_ratio = float(current.volume or 0) / avg_volume if avg_volume > 0 else 1.0
@@ -137,7 +146,7 @@ class PaperTradingEngine:
                 score -= 1
             reasons.append("volume confirmation")
 
-        side: Optional[str] = "BUY" if score >= 4 else "SELL" if score <= -4 else None
+        side = "BUY" if score >= 4 else "SELL" if score <= -4 else None
         if not side:
             return None
 
@@ -156,22 +165,21 @@ class PaperTradingEngine:
             "reason": " · ".join(reasons),
         }
 
-    def _risk_blocked(self, symbol: str, settings: Dict[str, Any]) -> bool:
+    def _risk_block_reason(self, symbol: str, settings: Dict[str, Any]) -> Optional[str]:
         positions = paper_db.list_positions()
         if any(str(p.get("symbol")) == symbol for p in positions):
-            return True
+            return "POSITION_ALREADY_OPEN"
         if len(positions) >= int(settings["maxConcurrentTrades"]):
-            return True
+            return "MAX_CONCURRENT_TRADES"
 
         today = paper_db.list_closed_trades_since(_today_start_ms())
         if len(today) >= int(settings["maxTradesPerDay"]):
-            return True
-
+            return "MAX_TRADES_PER_DAY"
         realized = sum(float(t.get("realizedPnL", 0)) for t in today)
         max_daily_loss = float(settings["capital"]) * float(settings["maxDailyLossPct"]) / 100.0
         if realized <= -max_daily_loss:
             paper_db.set_engine_running(False, int(time.time() * 1000))
-            return True
+            return "MAX_DAILY_LOSS"
 
         consecutive_losses = 0
         for trade in today:
@@ -181,39 +189,79 @@ class PaperTradingEngine:
                 break
         if consecutive_losses >= int(settings["maxConsecutiveLosses"]):
             paper_db.set_engine_running(False, int(time.time() * 1000))
-            return True
+            return "MAX_CONSECUTIVE_LOSSES"
 
         cooldown_ms = int(float(settings["cooldownMinutes"]) * 60_000)
         last_closed = paper_db.get_last_closed_trade(symbol)
         if last_closed and int(time.time() * 1000) - int(last_closed.get("closedAt", 0)) < cooldown_ms:
-            return True
-        return False
+            return "COOLDOWN"
+        return None
+
+    async def scan_all_symbols(self) -> None:
+        if not paper_db.get_engine_running():
+            return
+        for symbol in list(self.market_data_service.symbol_states.keys()):
+            await self.evaluate_symbol(symbol)
 
     async def on_completed_candle(self, symbol: str) -> None:
+        await self.evaluate_symbol(symbol)
+
+    async def evaluate_symbol(self, symbol: str) -> None:
         if not paper_db.get_engine_running():
             return
         settings = self.get_settings()
         signal = self.analyze_symbol(symbol)
-        if not signal or signal["confidence"] < int(settings["minConfidence"]):
+        if not signal:
             return
+
+        side = signal["side"]
+        signal_id = f"PA-{symbol}-{signal['timeframe']}-{signal['candleTime']}-{side}"
         if self.last_signal_candle.get(symbol) == signal["candleTime"]:
-            return
-        if self._risk_blocked(symbol, settings):
             return
 
         state = self.market_data_service.symbol_states.get(symbol)
         if not state or state.current_price <= 0:
             return
 
-        self.last_signal_candle[symbol] = signal["candleTime"]
-        side = signal["side"]
         raw_price = float(state.current_price)
+        stop_distance = max(signal["atr"] * float(settings["atrStopMultiplier"]), raw_price * 0.0025)
         slippage = float(settings["slippagePct"]) / 100.0
         entry = raw_price * (1 + slippage if side == "BUY" else 1 - slippage)
-
-        stop_distance = max(signal["atr"] * float(settings["atrStopMultiplier"]), entry * 0.0025)
         stop = entry - stop_distance if side == "BUY" else entry + stop_distance
         target = entry + stop_distance * float(settings["targetRR"]) if side == "BUY" else entry - stop_distance * float(settings["targetRR"])
+
+        status = "READY"
+        block_reason: Optional[str] = None
+        if signal["confidence"] < int(settings["minConfidence"]):
+            status = "FILTERED"
+            block_reason = "MIN_SETUP_SCORE"
+        elif signal_id in paper_db.list_executed_signal_ids():
+            status = "EXECUTED"
+        else:
+            block_reason = self._risk_block_reason(symbol, settings)
+            if block_reason:
+                status = "BLOCKED"
+
+        ui_signal = {
+            "id": signal_id,
+            "symbol": symbol,
+            "side": side,
+            "timeframe": signal["timeframe"],
+            "entry": round(entry, 6),
+            "stopLoss": round(stop, 6),
+            "target1": round(target, 6),
+            "target2": round(target, 6),
+            "riskReward": f"1:{float(settings['targetRR']):g}",
+            "confidence": int(signal["confidence"]),
+            "generatedTime": datetime.fromtimestamp(signal["candleTime"] / 1000, tz=timezone.utc).strftime("%H:%M:%S UTC"),
+            "generatedAt": int(signal["candleTime"]),
+            "reason": signal["reason"] + (f" · {block_reason}" if block_reason else ""),
+            "status": status,
+        }
+        self.latest_signals[symbol] = ui_signal
+
+        if status != "READY":
+            return
 
         risk_amount = float(settings["capital"]) * float(settings["riskPerTradePct"]) / 100.0
         quantity = risk_amount / max(stop_distance, 1e-9)
@@ -224,33 +272,19 @@ class PaperTradingEngine:
             quantity = notional / entry
 
         now = int(time.time() * 1000)
-        signal_id = f"PA-{symbol}-{signal['timeframe']}-{signal['candleTime']}-{side}"
-        if signal_id in paper_db.list_executed_signal_ids():
-            return
-
         position = {
-            "id": f"POS-{symbol}-{now}",
-            "signalId": signal_id,
-            "symbol": symbol,
-            "side": side,
-            "entryPrice": round(entry, 6),
-            "currentPrice": round(raw_price, 6),
-            "stopLoss": round(stop, 6),
-            "target1": round(target, 6),
-            "target2": round(target, 6),
-            "leverage": float(settings["maxLeverage"]),
-            "quantity": round(quantity, 8),
-            "size": round(notional, 2),
-            "margin": round(notional / max(float(settings["maxLeverage"]), 1.0), 2),
-            "unrealizedPnL": 0.0,
-            "unrealizedPnLPercent": 0.0,
-            "openedAt": now,
-            "confidence": signal["confidence"],
-            "timeframe": signal["timeframe"],
-            "reason": signal["reason"],
+            "id": f"POS-{symbol}-{now}", "signalId": signal_id, "symbol": symbol, "side": side,
+            "entryPrice": round(entry, 6), "currentPrice": round(raw_price, 6),
+            "stopLoss": round(stop, 6), "target1": round(target, 6), "target2": round(target, 6),
+            "leverage": float(settings["maxLeverage"]), "quantity": round(quantity, 8),
+            "size": round(notional, 2), "margin": round(notional / max(float(settings["maxLeverage"]), 1.0), 2),
+            "unrealizedPnL": 0.0, "unrealizedPnLPercent": 0.0, "openedAt": now,
+            "confidence": signal["confidence"], "timeframe": signal["timeframe"], "reason": signal["reason"],
         }
         paper_db.upsert_position(position)
         paper_db.mark_signal_executed(signal_id, symbol, now)
+        self.last_signal_candle[symbol] = signal["candleTime"]
+        self.latest_signals[symbol] = {**ui_signal, "status": "EXECUTED"}
 
     async def on_tick(self, symbol: str, price: float) -> None:
         position = next((p for p in paper_db.list_positions() if str(p.get("symbol")) == symbol), None)
@@ -263,12 +297,10 @@ class PaperTradingEngine:
         stop = float(position["stopLoss"])
         target = float(position["target1"])
         quantity = float(position.get("quantity") or (float(position.get("size", 0)) / max(entry, 1e-9)))
-
         gross = (price - entry) * quantity if side == "BUY" else (entry - price) * quantity
         entry_notional = entry * quantity
-        exit_notional = price * quantity
         fee_rate = float(settings["feeRatePct"]) / 100.0
-        estimated_fees = (entry_notional + exit_notional) * fee_rate
+        estimated_fees = (entry_notional + price * quantity) * fee_rate
         unrealized = gross - estimated_fees
         capital = max(float(settings["capital"]), 1e-9)
         position["currentPrice"] = round(price, 6)
@@ -277,7 +309,7 @@ class PaperTradingEngine:
         position["lastUpdated"] = int(time.time() * 1000)
         paper_db.upsert_position(position)
 
-        exit_reason: Optional[str] = None
+        exit_reason = None
         if side == "BUY" and price <= stop or side == "SELL" and price >= stop:
             exit_reason = "STOP_LOSS"
         elif side == "BUY" and price >= target or side == "SELL" and price <= target:
@@ -292,22 +324,12 @@ class PaperTradingEngine:
         realized = gross_realized - fees
         now = int(time.time() * 1000)
         trade = {
-            "id": f"CLOSED-{position['id']}",
-            "symbol": symbol,
-            "side": side,
-            "entryPrice": entry,
-            "exitPrice": round(exit_price, 6),
-            "size": float(position.get("size", entry_notional)),
-            "quantity": quantity,
-            "leverage": float(position.get("leverage", 1)),
-            "realizedPnL": round(realized, 2),
-            "realizedPnLPercent": round((realized / capital) * 100.0, 3),
-            "fees": round(fees, 2),
-            "exitReason": exit_reason,
-            "openedAt": int(position["openedAt"]),
-            "closedAt": now,
-            "durationSeconds": max(0, (now - int(position["openedAt"])) // 1000),
-            "isWin": realized > 0,
+            "id": f"CLOSED-{position['id']}", "symbol": symbol, "side": side,
+            "entryPrice": entry, "exitPrice": round(exit_price, 6), "size": float(position.get("size", entry_notional)),
+            "quantity": quantity, "leverage": float(position.get("leverage", 1)),
+            "realizedPnL": round(realized, 2), "realizedPnLPercent": round((realized / capital) * 100.0, 3),
+            "fees": round(fees, 2), "exitReason": exit_reason, "openedAt": int(position["openedAt"]),
+            "closedAt": now, "durationSeconds": max(0, (now - int(position["openedAt"])) // 1000), "isWin": realized > 0,
         }
         paper_db.save_closed_trade(trade)
         paper_db.delete_position(str(position["id"]))
