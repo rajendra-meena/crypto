@@ -37,7 +37,7 @@ export interface MarketTick {
   volume?: number;
 }
 
-// Compatibility type for chart/presentation only. Strategy decisions are backend-only.
+// Presentation compatibility only. Strategy decisions are backend-only.
 export interface TechnicalIndicators {
   rsi: number;
   macd: { macdLine: number; signalLine: number; histogram: number };
@@ -175,6 +175,7 @@ export interface TerminalSettings {
   minAtrPct: number;
   maxAtrPct: number;
   minVolumeRatio: number;
+  signalRetentionMinutes: number;
   btcTrendFilter: boolean;
   isLiveMode: boolean;
   apiKey: string;
@@ -187,11 +188,9 @@ export interface RiskSnapshot {
   consecutiveLosses: number;
   openPositions: number;
   openRisk: number;
-  openNotional?: number;
   maxDailyLoss: number;
   dailyLossRemaining?: number;
   maxPortfolioRisk: number;
-  maxPortfolioNotional?: number;
   engineRunning?: boolean;
   lastScan?: number;
   blocked: boolean;
@@ -202,11 +201,7 @@ export interface TradingApiState {
   engine_running: boolean;
   mode: 'PAPER_ONLY';
   strategy: string;
-  scanner?: {
-    status: string;
-    lastScan: number;
-    symbols: string[];
-  };
+  scanner?: { status: string; lastScan: number; symbols: string[] };
   positions: PaperPosition[];
   closed_trades: ClosedTrade[];
   executed_signal_ids: string[];
