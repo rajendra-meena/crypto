@@ -37,7 +37,7 @@ export interface MarketTick {
   volume?: number;
 }
 
-// Compatibility type for chart/legacy presentation only. Strategy decisions are backend-only.
+// Compatibility type for chart/presentation only. Strategy decisions are backend-only.
 export interface TechnicalIndicators {
   rsi: number;
   macd: { macdLine: number; signalLine: number; histogram: number };
@@ -75,6 +75,7 @@ export interface BackendAnalysis {
   triggerCandleTime?: number;
   referencePrice?: number;
   atr?: number;
+  dataVersion?: string;
 }
 
 export interface AlgoSignal {
@@ -94,6 +95,7 @@ export interface AlgoSignal {
   reason: string;
   status: SignalStatus;
   initialRisk?: number;
+  dataVersion?: string;
 }
 
 export interface PaperPosition {
@@ -185,9 +187,11 @@ export interface RiskSnapshot {
   consecutiveLosses: number;
   openPositions: number;
   openRisk: number;
+  openNotional?: number;
   maxDailyLoss: number;
   dailyLossRemaining?: number;
   maxPortfolioRisk: number;
+  maxPortfolioNotional?: number;
   engineRunning?: boolean;
   lastScan?: number;
   blocked: boolean;
