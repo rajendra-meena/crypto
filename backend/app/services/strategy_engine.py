@@ -57,7 +57,6 @@ class CryptoStrategyEngine:
         self.market_data_service=market_data_service
         self.analyses: Dict[str,Dict[str,Any]]={}
         self.latest_signals: Dict[str,Dict[str,Any]]={}
-        self.last_trigger: Dict[str,int]={}
         self.positions_by_symbol={str(p.get("symbol")):p for p in paper_db.list_positions()}
         self.last_persist: Dict[str,int]={}
         self.last_scan_ms=0
@@ -170,8 +169,8 @@ class CryptoStrategyEngine:
     async def on_completed_candle(self,symbol): await self.evaluate_symbol(symbol)
     async def evaluate_symbol(self,symbol):
         a=self.analyze_symbol(symbol); self.analyses[symbol]=a; trig=int(a.get("triggerCandleTime",0))
-        if trig<=0 or a.get("trigger")=="NONE" or a.get("bias")=="WAIT" or self.last_trigger.get(symbol)==trig: return
-        self.last_trigger[symbol]=trig; sig=self._signal(a,"READY" if a["status"]=="READY" else "FILTERED")
+        if trig<=0 or a.get("trigger")=="NONE" or a.get("bias")=="WAIT": return
+        sig=self._signal(a,"READY" if a["status"]=="READY" else "FILTERED")
         if a["status"]!="READY": self.latest_signals[symbol]=sig; return
         if not paper_db.get_engine_running(): sig["status"]="BLOCKED"; sig["reason"]+=" | ENGINE_OFF"; self.latest_signals[symbol]=sig; return
         st=self.market_data_service.symbol_states.get(symbol)
