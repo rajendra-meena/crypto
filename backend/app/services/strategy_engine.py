@@ -1,753 +1,220 @@
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
-
 from app.core.database import paper_db
 
-
 DEFAULT_TRADING_SETTINGS: Dict[str, Any] = {
-    "capital": 10000.0,
-    "riskPerTradePct": 0.75,
-    "maxDailyLossPct": 2.5,
-    "maxPortfolioRiskPct": 1.5,
-    "maxConcurrentTrades": 2,
-    "maxSameDirection": 2,
-    "maxLeverage": 3.0,
-    "minSetupScore": 70,
-    "maxTradesPerDay": 6,
-    "maxConsecutiveLosses": 3,
-    "cooldownMinutes": 20,
-    "atrStopMultiplier": 1.4,
-    "minStopPct": 0.25,
-    "maxStopPct": 1.50,
-    "targetRR": 2.0,
-    "breakevenAtR": 1.0,
-    "trailingStartR": 1.5,
-    "trailingDistanceR": 0.75,
-    "maxHoldMinutes": 240,
-    "minAtrPct": 0.03,
-    "maxAtrPct": 2.50,
-    "minVolumeRatio": 1.10,
-    "btcTrendFilter": True,
-    "feeRatePct": 0.05,
-    "slippagePct": 0.02,
-    "maxEntryDriftPct": 0.35,
+    "capital": 10000.0, "riskPerTradePct": 0.75, "maxDailyLossPct": 2.5,
+    "maxPortfolioRiskPct": 1.5, "maxConcurrentTrades": 2, "maxSameDirection": 2,
+    "maxLeverage": 3.0, "minSetupScore": 68, "maxTradesPerDay": 6,
+    "maxConsecutiveLosses": 3, "cooldownMinutes": 20, "atrStopMultiplier": 1.35,
+    "minStopPct": 0.20, "maxStopPct": 1.50, "targetRR": 2.0, "breakevenAtR": 1.0,
+    "trailingStartR": 1.5, "trailingDistanceR": 0.70, "maxHoldMinutes": 240,
+    "minAtrPct": 0.04, "maxAtrPct": 2.50, "minVolumeRatio": 1.0,
+    "btcTrendFilter": True, "feeRatePct": 0.05, "slippagePct": 0.02,
+    "maxEntryDriftPct": 0.30, "signalRetentionMinutes": 15,
 }
+TF_MS = {"1m": 60000, "5m": 300000, "15m": 900000}
 
-TIMEFRAME_MS = {"1m": 60_000, "5m": 300_000, "15m": 900_000}
-
-
-def _now_ms() -> int:
-    return int(time.time() * 1000)
-
-
-def _today_start_ms() -> int:
-    now = datetime.now(timezone.utc)
-    start = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
-    return int(start.timestamp() * 1000)
-
-
-def _ema_series(values: List[float], period: int) -> List[float]:
-    if not values:
-        return []
-    alpha = 2.0 / (period + 1.0)
-    result = [values[0]]
-    for value in values[1:]:
-        result.append(value * alpha + result[-1] * (1.0 - alpha))
-    return result
-
-
-def _rsi(values: List[float], period: int = 14) -> float:
-    if len(values) <= period:
-        return 50.0
-    gains = 0.0
-    losses = 0.0
-    start = len(values) - period
-    for idx in range(start, len(values)):
-        diff = values[idx] - values[idx - 1]
-        if diff >= 0:
-            gains += diff
-        else:
-            losses += abs(diff)
-    if losses == 0:
-        return 100.0
-    rs = (gains / period) / max(losses / period, 1e-12)
-    return 100.0 - 100.0 / (1.0 + rs)
-
-
-def _atr(candles: List[Any], period: int = 14) -> float:
-    if len(candles) < 2:
-        return 0.0
-    values: List[float] = []
-    start = max(1, len(candles) - period)
-    for idx in range(start, len(candles)):
-        current = candles[idx]
-        previous = candles[idx - 1]
-        values.append(
-            max(
-                float(current.high) - float(current.low),
-                abs(float(current.high) - float(previous.close)),
-                abs(float(current.low) - float(previous.close)),
-            )
-        )
-    return sum(values) / len(values) if values else 0.0
-
-
-def _round_price(value: float) -> float:
-    if value < 10:
-        return round(value, 6)
-    if value < 100:
-        return round(value, 4)
-    return round(value, 2)
-
+def now_ms(): return int(time.time() * 1000)
+def today_ms():
+    n = datetime.now(timezone.utc)
+    return int(datetime(n.year, n.month, n.day, tzinfo=timezone.utc).timestamp() * 1000)
+def ema(v: List[float], p: int) -> List[float]:
+    if not v: return []
+    a, out = 2/(p+1), [v[0]]
+    for x in v[1:]: out.append(x*a + out[-1]*(1-a))
+    return out
+def rsi(v: List[float], p=14):
+    if len(v) <= p: return 50.0
+    g=l=0.0
+    for i in range(len(v)-p, len(v)):
+        d=v[i]-v[i-1]
+        if d>=0: g+=d
+        else: l+=abs(d)
+    return 100.0 if l==0 else 100-(100/(1+g/max(l,1e-12)))
+def atr(c: List[Any], p=14):
+    if len(c)<2: return 0.0
+    tr=[]
+    for i in range(max(1,len(c)-p),len(c)):
+        x,y=c[i],c[i-1]
+        tr.append(max(float(x.high)-float(x.low),abs(float(x.high)-float(y.close)),abs(float(x.low)-float(y.close))))
+    return sum(tr)/len(tr) if tr else 0.0
+def price(v):
+    return round(v,6) if v<1 else round(v,4) if v<100 else round(v,2)
+def trend(closes, fast, slow, slope_n):
+    if len(closes)<slow+slope_n: return "NEUTRAL"
+    f,s=ema(closes,fast),ema(closes,slow)
+    sl=f[-1]-f[-1-slope_n]
+    if closes[-1]>f[-1]>s[-1] and sl>0: return "BULLISH"
+    if closes[-1]<f[-1]<s[-1] and sl<0: return "BEARISH"
+    return "NEUTRAL"
 
 class CryptoStrategyEngine:
-    """Single source of truth for multi-timeframe PAPER crypto trading.
-
-    Strategy:
-      * 15m: primary market regime (EMA20/EMA50 + EMA20 slope)
-      * 5m: directional trend/quality (EMA9/EMA21, RSI, ATR, structure)
-      * 1m: completed-candle breakout trigger + volume/body confirmation
-      * Altcoins: optional BTC 15m regime conflict filter
-
-    Execution:
-      * backend only; frontend never creates a position
-      * stop-distance risk sizing with portfolio/notional caps
-      * fees/slippage included in paper P&L
-      * breakeven, trailing stop, target and time exit managed tick-by-tick
-
-    This engine never submits real exchange orders.
-    """
-
-    STRATEGY_VERSION = "MTPA_3TF_V3"
-
+    """Single-source backend PAPER strategy. No live exchange order submission."""
+    STRATEGY_VERSION = "PA_MTF_V4"
     def __init__(self, market_data_service: Any):
-        self.market_data_service = market_data_service
-        self.analyses: Dict[str, Dict[str, Any]] = {}
-        self.latest_signals: Dict[str, Dict[str, Any]] = {}
-        self.last_evaluation_key: Dict[str, str] = {}
-        self.positions_by_symbol: Dict[str, Dict[str, Any]] = {
-            str(position.get("symbol")): position for position in paper_db.list_positions()
-        }
-        self.last_position_persist_ms: Dict[str, int] = {}
-        self.last_scan_ms = 0
+        self.market_data_service=market_data_service
+        self.analyses: Dict[str,Dict[str,Any]]={}
+        self.latest_signals: Dict[str,Dict[str,Any]]={}
+        self.last_trigger: Dict[str,int]={}
+        self.positions_by_symbol={str(p.get("symbol")):p for p in paper_db.list_positions()}
+        self.last_persist: Dict[str,int]={}
+        self.last_scan_ms=0
 
-    def get_settings(self) -> Dict[str, Any]:
-        settings = dict(DEFAULT_TRADING_SETTINGS)
-        saved = paper_db.get_trading_settings()
-        if saved:
-            if "minConfidence" in saved and "minSetupScore" not in saved:
-                saved = {**saved, "minSetupScore": saved["minConfidence"]}
-            settings.update({key: value for key, value in saved.items() if key in settings})
-        return settings
+    def get_settings(self):
+        out=dict(DEFAULT_TRADING_SETTINGS); saved=paper_db.get_trading_settings()
+        if "minConfidence" in saved and "minSetupScore" not in saved: saved={**saved,"minSetupScore":saved["minConfidence"]}
+        out.update({k:v for k,v in saved.items() if k in out}); return out
+    def get_analyses(self): return [self.analyses[k] for k in sorted(self.analyses)]
+    def get_signals(self):
+        cutoff=now_ms()-int(float(self.get_settings()["signalRetentionMinutes"])*60000)
+        self.latest_signals={k:v for k,v in self.latest_signals.items() if int(v.get("generatedAt",0))>=cutoff or v.get("status")=="EXECUTED"}
+        return sorted(self.latest_signals.values(),key=lambda x:int(x.get("generatedAt",0)),reverse=True)[:20]
+    def get_risk_snapshot(self):
+        s=self.get_settings(); t=paper_db.list_closed_trades_since(today_ms()); pnl=sum(float(x.get("realizedPnL",0)) for x in t)
+        losses=0
+        for x in t:
+            if float(x.get("realizedPnL",0))<0: losses+=1
+            else: break
+        open_risk=sum(float(x.get("initialRiskAmount",0)) for x in self.positions_by_symbol.values())
+        mdl=float(s["capital"])*float(s["maxDailyLossPct"])/100; mpr=float(s["capital"])*float(s["maxPortfolioRiskPct"])/100
+        return {"todayTrades":len(t),"todayRealizedPnL":round(pnl,2),"consecutiveLosses":losses,"openPositions":len(self.positions_by_symbol),"openRisk":round(open_risk,2),"maxDailyLoss":round(mdl,2),"dailyLossRemaining":round(max(0,mdl+pnl),2),"maxPortfolioRisk":round(mpr,2),"engineRunning":paper_db.get_engine_running(),"lastScan":self.last_scan_ms}
+    def build_state(self):
+        return {"engine_running":paper_db.get_engine_running(),"mode":"PAPER_ONLY","strategy":self.STRATEGY_VERSION,"scanner":{"status":"ACTIVE","lastScan":self.last_scan_ms,"symbols":sorted(self.market_data_service.symbol_states.keys())},"positions":list(self.positions_by_symbol.values()),"closed_trades":paper_db.list_closed_trades(),"executed_signal_ids":paper_db.list_executed_signal_ids(),"analyses":self.get_analyses(),"signals":self.get_signals(),"risk":self.get_risk_snapshot(),"settings":self.get_settings()}
 
-    def get_analyses(self) -> List[Dict[str, Any]]:
-        return [self.analyses[key] for key in sorted(self.analyses.keys())]
+    def _candles(self,symbol,tf,limit):
+        st=self.market_data_service.symbol_states.get(symbol)
+        if not st: return []
+        raw=[c for c in st.get_candles(tf,limit+20) if bool(getattr(c,"is_complete",False))]
+        d={int(c.timestamp):c for c in raw}; return [d[k] for k in sorted(d)][-limit:]
+    def _fresh(self,c,tf): return bool(c) and now_ms()-int(c[-1].timestamp)<=TF_MS[tf]*2.5
+    def _btc(self):
+        c=self._candles("BTCUSDT","15m",60)
+        return trend([float(x.close) for x in c],20,50,4) if len(c)>=55 else "NEUTRAL"
 
-    def get_signals(self) -> List[Dict[str, Any]]:
-        values = list(self.latest_signals.values())
-        values.sort(key=lambda item: int(item.get("generatedAt", 0)), reverse=True)
-        return values[:20]
+    def analyze_symbol(self,symbol):
+        base={"symbol":symbol,"bias":"WAIT","status":"WATCHING","setupScore":0,"timeframe":"15m/5m/1m","trend":"NEUTRAL","mtfTrend":"NEUTRAL","setup":"NONE","trigger":"NONE","rsi":50.0,"atrPct":0.0,"volumeRatio":0.0,"bodyQuality":0.0,"support":0.0,"resistance":0.0,"blockers":[],"reason":"Waiting for enough completed candles","triggerCandleTime":0,"referencePrice":0.0,"atr":0.0,"updatedAt":now_ms()}
+        c15,c5,c1=self._candles(symbol,"15m",60),self._candles(symbol,"5m",50),self._candles(symbol,"1m",35)
+        if len(c15)<55 or len(c5)<30 or len(c1)<22: return base
+        if not (self._fresh(c15,"15m") and self._fresh(c5,"5m") and self._fresh(c1,"1m")): return {**base,"status":"BLOCKED","blockers":["STALE_COMPLETED_CANDLES"],"reason":"Completed candle data is stale"}
+        cl15,cl5=[float(x.close) for x in c15],[float(x.close) for x in c5]
+        t15,t5=trend(cl15,20,50,4),trend(cl5,9,21,3)
+        side="BUY" if t15==t5=="BULLISH" else "SELL" if t15==t5=="BEARISH" else "WAIT"
+        cur,prev=c1[-1],c1[-2]; w=c1[-9:-1]; ph=max(float(x.high) for x in w); pl=min(float(x.low) for x in w)
+        e9,e21=ema(cl5,9),ema(cl5,21); zone=(min(e9[-1],e21[-1]),max(e9[-1],e21[-1])); touched=any(float(x.low)<=zone[1] and float(x.high)>=zone[0] for x in c1[-3:])
+        bull_bo=float(cur.close)>ph and float(cur.close)>float(prev.high); bear_bo=float(cur.close)<pl and float(cur.close)<float(prev.low)
+        bull_pb=touched and float(cur.close)>float(cur.open) and float(cur.close)>float(prev.high); bear_pb=touched and float(cur.close)<float(cur.open) and float(cur.close)<float(prev.low)
+        setup=trigger_name="NONE"
+        if side=="BUY" and bull_bo: setup,trigger_name="BREAKOUT","LONG_CONFIRM"
+        elif side=="SELL" and bear_bo: setup,trigger_name="BREAKDOWN","SHORT_CONFIRM"
+        elif side=="BUY" and bull_pb: setup,trigger_name="PULLBACK_RECLAIM","LONG_CONFIRM"
+        elif side=="SELL" and bear_pb: setup,trigger_name="PULLBACK_REJECT","SHORT_CONFIRM"
+        a=atr(c5,14); ap=a/max(float(c5[-1].close),1e-12)*100; rv=rsi(cl5,14); sup=min(float(x.low) for x in c5[-12:]); res=max(float(x.high) for x in c5[-12:])
+        vols=[float(x.volume or 0) for x in c1[-21:-1]]; av=sum(vols)/len(vols) if vols else 0; vr=float(cur.volume or 0)/av if av>0 else 1.0
+        rng=max(float(cur.high)-float(cur.low),1e-12); bq=abs(float(cur.close)-float(cur.open))/rng; db=(side=="BUY" and float(cur.close)>float(cur.open)) or (side=="SELL" and float(cur.close)<float(cur.open))
+        s=self.get_settings(); score=0; reasons=[]; blockers=[]
+        if t15!="NEUTRAL": score+=20; reasons.append("15m regime")
+        else: blockers.append("15M_REGIME_NEUTRAL")
+        if side!="WAIT": score+=20; reasons.append("5m trend aligned")
+        else: blockers.append("5M_TREND_NOT_ALIGNED")
+        if trigger_name!="NONE": score+=25; reasons.append("1m completed trigger")
+        else: blockers.append("NO_1M_TRIGGER")
+        rok=(50<=rv<=74) if side=="BUY" else (26<=rv<=50) if side=="SELL" else False
+        if rok: score+=10; reasons.append("RSI confirms")
+        if vr>=float(s["minVolumeRatio"]): score+=10; reasons.append("volume confirms")
+        elif vr>=0.8: score+=5; reasons.append("volume acceptable")
+        if bq>=0.55 and db: score+=10; reasons.append("strong trigger body")
+        elif bq>=0.35 and db: score+=5; reasons.append("acceptable trigger body")
+        vok=float(s["minAtrPct"])<=ap<=float(s["maxAtrPct"])
+        if vok: score+=5; reasons.append("ATR regime valid")
+        else: blockers.append("VOLATILITY_OUT_OF_RANGE")
+        if bool(s["btcTrendFilter"]) and symbol!="BTCUSDT" and side!="WAIT":
+            bt=self._btc()
+            if (side=="BUY" and bt=="BEARISH") or (side=="SELL" and bt=="BULLISH"): blockers.append("BTC_REGIME_CONFLICT")
+        hard={"15M_REGIME_NEUTRAL","5M_TREND_NOT_ALIGNED","NO_1M_TRIGGER","VOLATILITY_OUT_OF_RANGE","BTC_REGIME_CONFLICT"}
+        ready=side!="WAIT" and trigger_name!="NONE" and score>=int(s["minSetupScore"]) and not any(x in hard for x in blockers)
+        status="READY" if ready else "FILTERED" if side!="WAIT" or trigger_name!="NONE" else "WATCHING"
+        reason=" · ".join(reasons) if reasons else "Waiting for multi-timeframe alignment"
+        if blockers: reason+=" | "+", ".join(blockers)
+        return {**base,"bias":side,"status":status,"setupScore":min(100,score),"trend":t15,"mtfTrend":t5,"setup":setup,"trigger":trigger_name,"rsi":round(rv,1),"atrPct":round(ap,3),"volumeRatio":round(vr,2),"bodyQuality":round(bq,2),"support":price(sup),"resistance":price(res),"blockers":blockers,"reason":reason,"triggerCandleTime":int(cur.timestamp),"referencePrice":float(cur.close),"atr":a,"updatedAt":now_ms()}
 
-    def get_risk_snapshot(self) -> Dict[str, Any]:
-        settings = self.get_settings()
-        today = paper_db.list_closed_trades_since(_today_start_ms())
-        realized = sum(float(item.get("realizedPnL", 0.0)) for item in today)
-        consecutive_losses = 0
-        for trade in today:
-            if float(trade.get("realizedPnL", 0.0)) < 0:
-                consecutive_losses += 1
-            else:
-                break
+    def _risk(self,symbol,side)->Tuple[Optional[str],Dict[str,Any]]:
+        s=self.get_settings(); r=self.get_risk_snapshot()
+        if float(r["todayRealizedPnL"])<=-float(r["maxDailyLoss"]): paper_db.set_engine_running(False,now_ms()); return "MAX_DAILY_LOSS",r
+        if int(r["consecutiveLosses"])>=int(s["maxConsecutiveLosses"]): paper_db.set_engine_running(False,now_ms()); return "MAX_CONSECUTIVE_LOSSES",r
+        if int(r["todayTrades"])>=int(s["maxTradesPerDay"]): return "MAX_TRADES_PER_DAY",r
+        if symbol in self.positions_by_symbol: return "POSITION_ALREADY_OPEN",r
+        if len(self.positions_by_symbol)>=int(s["maxConcurrentTrades"]): return "MAX_CONCURRENT_TRADES",r
+        if sum(1 for p in self.positions_by_symbol.values() if str(p.get("side"))==side)>=int(s["maxSameDirection"]): return "MAX_SAME_DIRECTION_EXPOSURE",r
+        if float(r["openRisk"])>=float(r["maxPortfolioRisk"]): return "MAX_PORTFOLIO_RISK",r
+        last=paper_db.get_last_closed_trade(symbol); cd=int(float(s["cooldownMinutes"])*60000)
+        if last and now_ms()-int(last.get("closedAt",0))<cd: return "COOLDOWN",r
+        return None,r
 
-        open_risk = sum(float(position.get("initialRiskAmount", 0.0)) for position in self.positions_by_symbol.values())
-        open_notional = sum(float(position.get("size", 0.0)) for position in self.positions_by_symbol.values())
-        max_daily_loss = float(settings["capital"]) * float(settings["maxDailyLossPct"]) / 100.0
-        max_portfolio_risk = float(settings["capital"]) * float(settings["maxPortfolioRiskPct"]) / 100.0
-        max_portfolio_notional = float(settings["capital"]) * float(settings["maxLeverage"])
-        return {
-            "todayTrades": len(today),
-            "todayRealizedPnL": round(realized, 2),
-            "consecutiveLosses": consecutive_losses,
-            "openPositions": len(self.positions_by_symbol),
-            "openRisk": round(open_risk, 2),
-            "openNotional": round(open_notional, 2),
-            "maxDailyLoss": round(max_daily_loss, 2),
-            "dailyLossRemaining": round(max(0.0, max_daily_loss + realized), 2),
-            "maxPortfolioRisk": round(max_portfolio_risk, 2),
-            "maxPortfolioNotional": round(max_portfolio_notional, 2),
-            "engineRunning": paper_db.get_engine_running(),
-            "lastScan": self.last_scan_ms,
-        }
+    def _signal(self,a,status,suffix=None):
+        s=self.get_settings(); symbol=str(a["symbol"]); side=str(a["bias"]); st=self.market_data_service.symbol_states.get(symbol); raw=float(st.current_price) if st else 0.0
+        slip=float(s["slippagePct"])/100; entry=raw*(1+slip if side=="BUY" else 1-slip)
+        sd=max(float(a["atr"])*float(s["atrStopMultiplier"]),raw*float(s["minStopPct"])/100)
+        maxd=raw*float(s["maxStopPct"])/100; final=status; extra=suffix
+        if raw<=0: final,extra="BLOCKED","NO_LIVE_PRICE"
+        elif sd<=0: final,extra="FILTERED","INVALID_STOP_DISTANCE"
+        elif maxd>0 and sd>maxd: final,extra="FILTERED","STOP_TOO_WIDE"
+        stop=entry-sd if side=="BUY" else entry+sd; target=entry+sd*float(s["targetRR"]) if side=="BUY" else entry-sd*float(s["targetRR"])
+        reason=str(a["reason"])+(f" | {extra}" if extra else "")
+        return {"id":f"{self.STRATEGY_VERSION}-{symbol}-{a['triggerCandleTime']}-{side}","symbol":symbol,"side":side,"timeframe":"15m/5m/1m","entry":price(entry),"stopLoss":price(stop),"target1":price(target),"target2":price(target),"riskReward":f"1:{float(s['targetRR']):g}","confidence":int(a["setupScore"]),"setupScore":int(a["setupScore"]),"generatedTime":datetime.fromtimestamp(int(a["triggerCandleTime"])/1000,tz=timezone.utc).strftime("%H:%M:%S UTC"),"generatedAt":int(a["triggerCandleTime"]),"reason":reason,"status":final,"initialRisk":price(sd)}
 
-    def build_state(self) -> Dict[str, Any]:
-        return {
-            "engine_running": paper_db.get_engine_running(),
-            "mode": "PAPER_ONLY",
-            "strategy": self.STRATEGY_VERSION,
-            "scanner": {
-                "status": "ACTIVE",
-                "lastScan": self.last_scan_ms,
-                "symbols": sorted(self.market_data_service.symbol_states.keys()),
-            },
-            "positions": list(self.positions_by_symbol.values()),
-            "closed_trades": paper_db.list_closed_trades(),
-            "executed_signal_ids": paper_db.list_executed_signal_ids(),
-            "analyses": self.get_analyses(),
-            "signals": self.get_signals(),
-            "risk": self.get_risk_snapshot(),
-            "settings": self.get_settings(),
-        }
+    async def scan_all_symbols(self):
+        self.last_scan_ms=now_ms()
+        for symbol in list(self.market_data_service.symbol_states.keys()): await self.evaluate_symbol(symbol)
+    async def on_completed_candle(self,symbol): await self.evaluate_symbol(symbol)
+    async def evaluate_symbol(self,symbol):
+        a=self.analyze_symbol(symbol); self.analyses[symbol]=a; trig=int(a.get("triggerCandleTime",0))
+        if trig<=0 or a.get("trigger")=="NONE" or a.get("bias")=="WAIT" or self.last_trigger.get(symbol)==trig: return
+        self.last_trigger[symbol]=trig; sig=self._signal(a,"READY" if a["status"]=="READY" else "FILTERED")
+        if a["status"]!="READY": self.latest_signals[symbol]=sig; return
+        if not paper_db.get_engine_running(): sig["status"]="BLOCKED"; sig["reason"]+=" | ENGINE_OFF"; self.latest_signals[symbol]=sig; return
+        st=self.market_data_service.symbol_states.get(symbol)
+        if not st or float(st.current_price)<=0: sig["status"]="BLOCKED"; sig["reason"]+=" | NO_LIVE_PRICE"; self.latest_signals[symbol]=sig; return
+        ref=float(a["referencePrice"]); drift=abs(float(st.current_price)-ref)/max(ref,1e-12)*100
+        if drift>float(self.get_settings()["maxEntryDriftPct"]): sig["status"]="FILTERED"; sig["reason"]+=" | ENTRY_DRIFT_TOO_LARGE"; self.latest_signals[symbol]=sig; return
+        block,risk=self._risk(symbol,str(a["bias"]))
+        if block: sig["status"]="BLOCKED"; sig["reason"]+=f" | {block}"; self.latest_signals[symbol]=sig; return
+        if sig["status"]=="FILTERED": self.latest_signals[symbol]=sig; return
+        if str(sig["id"]) in paper_db.list_executed_signal_ids(): sig["status"]="EXECUTED"; self.latest_signals[symbol]=sig; return
+        s=self.get_settings(); entry=float(sig["entry"]); stop=float(sig["stopLoss"]); ir=abs(entry-stop)
+        req=float(s["capital"])*float(s["riskPerTradePct"])/100; rem=max(0,float(risk["maxPortfolioRisk"])-float(risk["openRisk"])); ra=min(req,rem)
+        if ir<=0 or ra<=0: sig["status"]="BLOCKED"; sig["reason"]+=" | INVALID_RISK_OR_PORTFOLIO_LIMIT"; self.latest_signals[symbol]=sig; return
+        qty=ra/ir; notional=qty*entry; cap=float(s["capital"])*float(s["maxLeverage"])
+        if notional>cap: notional=cap; qty=notional/max(entry,1e-12)
+        actual=ir*qty; n=now_ms(); pos={"id":f"POS-{symbol}-{n}","signalId":sig["id"],"strategyVersion":self.STRATEGY_VERSION,"symbol":symbol,"side":a["bias"],"entryPrice":entry,"currentPrice":float(st.current_price),"stopLoss":stop,"initialStopLoss":stop,"target1":float(sig["target1"]),"target2":float(sig["target2"]),"initialRisk":price(ir),"initialRiskAmount":round(actual,2),"atrAtEntry":float(a["atr"]),"leverage":float(s["maxLeverage"]),"quantity":round(qty,8),"size":round(notional,2),"margin":round(notional/max(float(s["maxLeverage"]),1),2),"unrealizedPnL":0.0,"unrealizedPnLPercent":0.0,"rMultiple":0.0,"breakEvenActivated":False,"trailingActivated":False,"openedAt":n,"lastUpdated":n,"setupScore":int(a["setupScore"]),"reason":a["reason"]}
+        self.positions_by_symbol[symbol]=pos; paper_db.upsert_position(pos); paper_db.mark_signal_executed(str(sig["id"]),symbol,n); sig["status"]="EXECUTED"; self.latest_signals[symbol]=sig
 
-    def _completed(self, symbol: str, timeframe: str, limit: int) -> List[Any]:
-        state = self.market_data_service.symbol_states.get(symbol)
-        if not state:
-            return []
-        raw = [
-            candle
-            for candle in state.get_candles(timeframe, limit + 15)
-            if bool(getattr(candle, "is_complete", False))
-        ]
-        by_timestamp: Dict[int, Any] = {int(candle.timestamp): candle for candle in raw}
-        return [by_timestamp[key] for key in sorted(by_timestamp.keys())][-limit:]
-
-    def _is_fresh(self, candles: List[Any], timeframe: str) -> bool:
-        if not candles:
-            return False
-        return _now_ms() - int(candles[-1].timestamp) <= TIMEFRAME_MS[timeframe] * 2.5
-
-    def _htf_direction(self, symbol: str) -> str:
-        candles = self._completed(symbol, "15m", 60)
-        if len(candles) < 55:
-            return "NEUTRAL"
-        closes = [float(candle.close) for candle in candles]
-        ema20 = _ema_series(closes, 20)
-        ema50 = _ema_series(closes, 50)
-        slope = ema20[-1] - ema20[-6]
-        if closes[-1] > ema20[-1] > ema50[-1] and slope > 0:
-            return "BULLISH"
-        if closes[-1] < ema20[-1] < ema50[-1] and slope < 0:
-            return "BEARISH"
-        return "NEUTRAL"
-
-    def analyze_symbol(self, symbol: str) -> Dict[str, Any]:
-        now = _now_ms()
-        base = {
-            "symbol": symbol,
-            "bias": "WAIT",
-            "status": "WATCHING",
-            "setupScore": 0,
-            "timeframe": "15m/5m/1m",
-            "trend": "NEUTRAL",
-            "mtfTrend": "NEUTRAL",
-            "setup": "NONE",
-            "trigger": "NONE",
-            "rsi": 50.0,
-            "atrPct": 0.0,
-            "volumeRatio": 0.0,
-            "bodyQuality": 0.0,
-            "support": 0.0,
-            "resistance": 0.0,
-            "blockers": [],
-            "reason": "Waiting for enough completed candles",
-            "triggerCandleTime": 0,
-            "referencePrice": 0.0,
-            "atr": 0.0,
-            "dataVersion": "",
-            "updatedAt": now,
-        }
-
-        c15 = self._completed(symbol, "15m", 60)
-        c5 = self._completed(symbol, "5m", 50)
-        c1 = self._completed(symbol, "1m", 40)
-        if len(c15) < 55 or len(c5) < 30 or len(c1) < 25:
-            return base
-
-        data_version = f"{int(c15[-1].timestamp)}:{int(c5[-1].timestamp)}:{int(c1[-1].timestamp)}"
-        if not (self._is_fresh(c15, "15m") and self._is_fresh(c5, "5m") and self._is_fresh(c1, "1m")):
-            return {
-                **base,
-                "status": "BLOCKED",
-                "blockers": ["STALE_COMPLETED_CANDLES"],
-                "reason": "Completed candle data is stale",
-                "dataVersion": data_version,
-            }
-
-        close15 = [float(c.close) for c in c15]
-        ema20_15 = _ema_series(close15, 20)
-        ema50_15 = _ema_series(close15, 50)
-        trend = "NEUTRAL"
-        if close15[-1] > ema20_15[-1] > ema50_15[-1] and ema20_15[-1] > ema20_15[-6]:
-            trend = "BULLISH"
-        elif close15[-1] < ema20_15[-1] < ema50_15[-1] and ema20_15[-1] < ema20_15[-6]:
-            trend = "BEARISH"
-
-        close5 = [float(c.close) for c in c5]
-        ema9_5 = _ema_series(close5, 9)
-        ema21_5 = _ema_series(close5, 21)
-        mtf = "NEUTRAL"
-        if close5[-1] > ema9_5[-1] > ema21_5[-1]:
-            mtf = "BULLISH"
-        elif close5[-1] < ema9_5[-1] < ema21_5[-1]:
-            mtf = "BEARISH"
-
-        direction = "WAIT"
-        if trend == "BULLISH" and mtf == "BULLISH":
-            direction = "BUY"
-        elif trend == "BEARISH" and mtf == "BEARISH":
-            direction = "SELL"
-
-        current1 = c1[-1]
-        prior1 = c1[-7:-1]
-        prior_high = max(float(c.high) for c in prior1)
-        prior_low = min(float(c.low) for c in prior1)
-        bullish_breakout = float(current1.close) > prior_high
-        bearish_breakdown = float(current1.close) < prior_low
-        breakout_ok = bullish_breakout if direction == "BUY" else bearish_breakdown if direction == "SELL" else False
-
-        current5 = c5[-1]
-        support = min(float(c.low) for c in c5[-10:])
-        resistance = max(float(c.high) for c in c5[-10:])
-        atr = _atr(c5, 14)
-        atr_pct = atr / max(float(current5.close), 1e-12) * 100.0
-        rsi = _rsi(close5, 14)
-
-        prior_volumes = [float(c.volume or 0.0) for c in c1[-21:-1]]
-        average_volume = sum(prior_volumes) / len(prior_volumes) if prior_volumes else 0.0
-        volume_ratio = float(current1.volume or 0.0) / average_volume if average_volume > 0 else 0.0
-
-        candle_range = max(float(current1.high) - float(current1.low), 1e-12)
-        body_quality = abs(float(current1.close) - float(current1.open)) / candle_range
-        directional_body = (
-            direction == "BUY" and float(current1.close) > float(current1.open)
-        ) or (
-            direction == "SELL" and float(current1.close) < float(current1.open)
-        )
-
-        settings = self.get_settings()
-        blockers: List[str] = []
-        reasons: List[str] = []
-        score = 0
-
-        if direction != "WAIT":
-            score += 20
-            reasons.append("15m regime aligned")
-            score += 15
-            reasons.append("5m EMA trend aligned")
-        else:
-            blockers.append("TIMEFRAME_TREND_NOT_ALIGNED")
-
-        if breakout_ok:
-            score += 25
-            reasons.append("1m completed-candle breakout")
-        else:
-            blockers.append("NO_COMPLETED_1M_BREAKOUT")
-
-        rsi_ok = (52.0 <= rsi <= 72.0) if direction == "BUY" else (28.0 <= rsi <= 48.0) if direction == "SELL" else False
-        if rsi_ok:
-            score += 10
-            reasons.append("5m RSI confirms momentum")
-        elif direction != "WAIT":
-            blockers.append("RSI_NOT_CONFIRMING")
-
-        if volume_ratio >= float(settings["minVolumeRatio"]):
-            score += 10
-            reasons.append("1m volume expansion")
-        else:
-            blockers.append("LOW_TRIGGER_VOLUME")
-
-        volatility_ok = float(settings["minAtrPct"]) <= atr_pct <= float(settings["maxAtrPct"])
-        if volatility_ok:
-            score += 10
-            reasons.append("5m ATR regime valid")
-        else:
-            blockers.append("VOLATILITY_OUT_OF_RANGE")
-
-        if body_quality >= 0.55 and directional_body:
-            score += 10
-            reasons.append("strong trigger candle body")
-        else:
-            blockers.append("WEAK_TRIGGER_CANDLE")
-
-        if atr > 0 and abs(close5[-1] - ema21_5[-1]) / atr > 2.5:
-            blockers.append("OVEREXTENDED_FROM_5M_MEAN")
-
-        if bool(settings.get("btcTrendFilter", True)) and symbol != "BTCUSDT" and direction != "WAIT":
-            btc_direction = self._htf_direction("BTCUSDT")
-            if (direction == "BUY" and btc_direction == "BEARISH") or (direction == "SELL" and btc_direction == "BULLISH"):
-                blockers.append("BTC_REGIME_CONFLICT")
-
-        hard_blockers = {
-            "TIMEFRAME_TREND_NOT_ALIGNED",
-            "NO_COMPLETED_1M_BREAKOUT",
-            "VOLATILITY_OUT_OF_RANGE",
-            "OVEREXTENDED_FROM_5M_MEAN",
-            "BTC_REGIME_CONFLICT",
-        }
-        hard_blocked = any(item in hard_blockers for item in blockers)
-        ready = direction != "WAIT" and score >= int(settings["minSetupScore"]) and not hard_blocked
-        status = "READY" if ready else "FILTERED" if direction != "WAIT" else "WATCHING"
-        setup = "BREAKOUT" if direction == "BUY" and bullish_breakout else "BREAKDOWN" if direction == "SELL" and bearish_breakdown else "NONE"
-        trigger = "LONG_CONFIRM" if direction == "BUY" and breakout_ok else "SHORT_CONFIRM" if direction == "SELL" and breakout_ok else "NONE"
-        reason = " · ".join(reasons) if reasons else "Waiting for multi-timeframe alignment"
-        if blockers:
-            reason += " | " + ", ".join(blockers)
-
-        return {
-            **base,
-            "bias": direction,
-            "status": status,
-            "setupScore": min(100, score),
-            "trend": trend,
-            "mtfTrend": mtf,
-            "setup": setup,
-            "trigger": trigger,
-            "rsi": round(rsi, 1),
-            "atrPct": round(atr_pct, 3),
-            "volumeRatio": round(volume_ratio, 2),
-            "bodyQuality": round(body_quality, 2),
-            "support": _round_price(support),
-            "resistance": _round_price(resistance),
-            "blockers": blockers,
-            "reason": reason,
-            "triggerCandleTime": int(current1.timestamp),
-            "referencePrice": float(current1.close),
-            "atr": atr,
-            "dataVersion": data_version,
-            "updatedAt": now,
-        }
-
-    def _risk_status(self, symbol: str, side: str) -> Tuple[Optional[str], Dict[str, Any]]:
-        settings = self.get_settings()
-        risk = self.get_risk_snapshot()
-        if float(risk["todayRealizedPnL"]) <= -float(risk["maxDailyLoss"]):
-            paper_db.set_engine_running(False, _now_ms())
-            return "MAX_DAILY_LOSS", risk
-        if int(risk["consecutiveLosses"]) >= int(settings["maxConsecutiveLosses"]):
-            paper_db.set_engine_running(False, _now_ms())
-            return "MAX_CONSECUTIVE_LOSSES", risk
-        if int(risk["todayTrades"]) >= int(settings["maxTradesPerDay"]):
-            return "MAX_TRADES_PER_DAY", risk
-        if len(self.positions_by_symbol) >= int(settings["maxConcurrentTrades"]):
-            return "MAX_CONCURRENT_TRADES", risk
-        if symbol in self.positions_by_symbol:
-            return "POSITION_ALREADY_OPEN", risk
-        same_direction = sum(1 for position in self.positions_by_symbol.values() if str(position.get("side")) == side)
-        if same_direction >= int(settings["maxSameDirection"]):
-            return "MAX_SAME_DIRECTION_EXPOSURE", risk
-        if float(risk["openRisk"]) >= float(risk["maxPortfolioRisk"]):
-            return "MAX_PORTFOLIO_RISK", risk
-        if float(risk["openNotional"]) >= float(risk["maxPortfolioNotional"]):
-            return "MAX_PORTFOLIO_NOTIONAL", risk
-        last_closed = paper_db.get_last_closed_trade(symbol)
-        cooldown_ms = int(float(settings["cooldownMinutes"]) * 60_000)
-        if last_closed and _now_ms() - int(last_closed.get("closedAt", 0)) < cooldown_ms:
-            return "COOLDOWN", risk
-        return None, risk
-
-    def _make_signal(self, analysis: Dict[str, Any], status: str, suffix: Optional[str] = None) -> Dict[str, Any]:
-        settings = self.get_settings()
-        symbol = str(analysis["symbol"])
-        side = str(analysis["bias"])
-        state = self.market_data_service.symbol_states.get(symbol)
-        raw_price = float(state.current_price) if state else 0.0
-        slippage = float(settings["slippagePct"]) / 100.0
-        entry = raw_price * (1.0 + slippage if side == "BUY" else 1.0 - slippage)
-
-        atr_distance = float(analysis["atr"]) * float(settings["atrStopMultiplier"])
-        min_distance = raw_price * float(settings["minStopPct"]) / 100.0
-        structure_distance = raw_price - float(analysis["support"]) if side == "BUY" else float(analysis["resistance"]) - raw_price
-        stop_distance = max(atr_distance, min_distance, structure_distance if structure_distance > 0 else 0.0)
-        max_distance = raw_price * float(settings["maxStopPct"]) / 100.0
-        final_status = status
-        final_suffix = suffix
-        if max_distance > 0 and stop_distance > max_distance:
-            final_status = "FILTERED"
-            final_suffix = "STOP_TOO_WIDE"
-
-        stop = entry - stop_distance if side == "BUY" else entry + stop_distance
-        target = entry + stop_distance * float(settings["targetRR"]) if side == "BUY" else entry - stop_distance * float(settings["targetRR"])
-        signal_id = f"{self.STRATEGY_VERSION}-{symbol}-{analysis['triggerCandleTime']}-{side}"
-        reason = str(analysis["reason"])
-        if final_suffix:
-            reason += f" | {final_suffix}"
-
-        return {
-            "id": signal_id,
-            "symbol": symbol,
-            "side": side,
-            "timeframe": "15m/5m/1m",
-            "entry": _round_price(entry),
-            "stopLoss": _round_price(stop),
-            "target1": _round_price(target),
-            "target2": _round_price(target),
-            "riskReward": f"1:{float(settings['targetRR']):g}",
-            "confidence": int(analysis["setupScore"]),
-            "setupScore": int(analysis["setupScore"]),
-            "generatedTime": datetime.fromtimestamp(int(analysis["triggerCandleTime"]) / 1000, tz=timezone.utc).strftime("%H:%M:%S UTC"),
-            "generatedAt": int(analysis["triggerCandleTime"]),
-            "reason": reason,
-            "status": final_status,
-            "initialRisk": _round_price(stop_distance),
-            "dataVersion": analysis.get("dataVersion", ""),
-        }
-
-    async def scan_all_symbols(self) -> None:
-        self.last_scan_ms = _now_ms()
-        for symbol in list(self.market_data_service.symbol_states.keys()):
-            await self.evaluate_symbol(symbol)
-
-    async def on_completed_candle(self, symbol: str) -> None:
-        await self.evaluate_symbol(symbol)
-
-    async def evaluate_symbol(self, symbol: str) -> None:
-        analysis = self.analyze_symbol(symbol)
-        self.analyses[symbol] = analysis
-
-        data_version = str(analysis.get("dataVersion", ""))
-        if not data_version:
-            if symbol not in self.positions_by_symbol:
-                self.latest_signals.pop(symbol, None)
-            return
-
-        evaluation_key = f"{data_version}:{analysis.get('bias')}:{analysis.get('setupScore')}:{analysis.get('status')}"
-        if self.last_evaluation_key.get(symbol) == evaluation_key:
-            return
-        self.last_evaluation_key[symbol] = evaluation_key
-
-        # Keep an executed signal visible while its position is still open.
-        if symbol in self.positions_by_symbol:
-            existing = self.latest_signals.get(symbol)
-            if existing:
-                existing["status"] = "EXECUTED"
-                self.latest_signals[symbol] = existing
-            return
-
-        if analysis["status"] != "READY" or analysis["bias"] == "WAIT":
-            self.latest_signals.pop(symbol, None)
-            return
-
-        if not paper_db.get_engine_running():
-            self.latest_signals[symbol] = self._make_signal(analysis, "BLOCKED", "ENGINE_OFF")
-            return
-
-        state = self.market_data_service.symbol_states.get(symbol)
-        if not state or float(state.current_price) <= 0:
-            self.latest_signals[symbol] = self._make_signal(analysis, "BLOCKED", "NO_LIVE_PRICE")
-            return
-
-        reference = float(analysis["referencePrice"])
-        drift_pct = abs(float(state.current_price) - reference) / max(reference, 1e-12) * 100.0
-        if drift_pct > float(self.get_settings()["maxEntryDriftPct"]):
-            self.latest_signals[symbol] = self._make_signal(analysis, "FILTERED", "ENTRY_DRIFT_TOO_LARGE")
-            return
-
-        block_reason, risk_snapshot = self._risk_status(symbol, str(analysis["bias"]))
-        signal = self._make_signal(analysis, "READY", block_reason)
-        if block_reason:
-            signal["status"] = "BLOCKED"
-            self.latest_signals[symbol] = signal
-            return
-        if signal["status"] == "FILTERED":
-            self.latest_signals[symbol] = signal
-            return
-
-        signal_id = str(signal["id"])
-        if signal_id in paper_db.list_executed_signal_ids():
-            signal["status"] = "EXECUTED"
-            self.latest_signals[symbol] = signal
-            return
-
-        settings = self.get_settings()
-        entry = float(signal["entry"])
-        stop = float(signal["stopLoss"])
-        initial_risk = abs(entry - stop)
-        if initial_risk <= 0:
-            signal["status"] = "FILTERED"
-            signal["reason"] += " | INVALID_STOP_DISTANCE"
-            self.latest_signals[symbol] = signal
-            return
-
-        requested_risk = float(settings["capital"]) * float(settings["riskPerTradePct"]) / 100.0
-        remaining_portfolio_risk = max(0.0, float(risk_snapshot["maxPortfolioRisk"]) - float(risk_snapshot["openRisk"]))
-        risk_amount = min(requested_risk, remaining_portfolio_risk)
-        if risk_amount <= 0:
-            signal["status"] = "BLOCKED"
-            signal["reason"] += " | MAX_PORTFOLIO_RISK"
-            self.latest_signals[symbol] = signal
-            return
-
-        quantity = risk_amount / initial_risk
-        notional = quantity * entry
-        remaining_notional = max(0.0, float(risk_snapshot["maxPortfolioNotional"]) - float(risk_snapshot["openNotional"]))
-        if remaining_notional <= 0:
-            signal["status"] = "BLOCKED"
-            signal["reason"] += " | MAX_PORTFOLIO_NOTIONAL"
-            self.latest_signals[symbol] = signal
-            return
-        if notional > remaining_notional:
-            notional = remaining_notional
-            quantity = notional / max(entry, 1e-12)
-
-        actual_risk_amount = initial_risk * quantity
-        if actual_risk_amount <= 0:
-            signal["status"] = "FILTERED"
-            signal["reason"] += " | ZERO_RISK_SIZE"
-            self.latest_signals[symbol] = signal
-            return
-
-        now = _now_ms()
-        position = {
-            "id": f"POS-{symbol}-{now}",
-            "signalId": signal_id,
-            "strategyVersion": self.STRATEGY_VERSION,
-            "symbol": symbol,
-            "side": analysis["bias"],
-            "entryPrice": entry,
-            "currentPrice": float(state.current_price),
-            "stopLoss": stop,
-            "initialStopLoss": stop,
-            "target1": float(signal["target1"]),
-            "target2": float(signal["target2"]),
-            "initialRisk": _round_price(initial_risk),
-            "initialRiskAmount": round(actual_risk_amount, 2),
-            "atrAtEntry": float(analysis["atr"]),
-            "leverage": float(settings["maxLeverage"]),
-            "quantity": round(quantity, 8),
-            "size": round(notional, 2),
-            "margin": round(notional / max(float(settings["maxLeverage"]), 1.0), 2),
-            "unrealizedPnL": 0.0,
-            "unrealizedPnLPercent": 0.0,
-            "rMultiple": 0.0,
-            "breakEvenActivated": False,
-            "trailingActivated": False,
-            "openedAt": now,
-            "lastUpdated": now,
-            "setupScore": int(analysis["setupScore"]),
-            "reason": analysis["reason"],
-        }
-        self.positions_by_symbol[symbol] = position
-        paper_db.upsert_position(position)
-        paper_db.mark_signal_executed(signal_id, symbol, now)
-        signal["status"] = "EXECUTED"
-        signal["reason"] += " | AUTO_PAPER_ENTRY"
-        self.latest_signals[symbol] = signal
-        self.analyses[symbol] = {**analysis, "status": "EXECUTED"}
-
-    def _close_position(self, symbol: str, raw_price: float, reason: str) -> Optional[Dict[str, Any]]:
-        position = self.positions_by_symbol.get(symbol)
-        if not position:
-            return None
-        settings = self.get_settings()
-        side = str(position["side"])
-        entry = float(position["entryPrice"])
-        quantity = float(position.get("quantity", 0.0))
-        slippage = float(settings["slippagePct"]) / 100.0
-        exit_price = raw_price * (1.0 - slippage if side == "BUY" else 1.0 + slippage)
-        gross = (exit_price - entry) * quantity if side == "BUY" else (entry - exit_price) * quantity
-        fee_rate = float(settings["feeRatePct"]) / 100.0
-        fees = (entry * quantity + exit_price * quantity) * fee_rate
-        realized = gross - fees
-        initial_risk_amount = max(float(position.get("initialRiskAmount", 0.0)), 1e-12)
-        capital = max(float(settings["capital"]), 1e-12)
-        now = _now_ms()
-        trade = {
-            "id": f"CLOSED-{position['id']}",
-            "signalId": position.get("signalId"),
-            "strategyVersion": position.get("strategyVersion", self.STRATEGY_VERSION),
-            "symbol": symbol,
-            "side": side,
-            "entryPrice": entry,
-            "exitPrice": _round_price(exit_price),
-            "size": float(position.get("size", entry * quantity)),
-            "quantity": quantity,
-            "leverage": float(position.get("leverage", 1.0)),
-            "realizedPnL": round(realized, 2),
-            "realizedPnLPercent": round(realized / capital * 100.0, 3),
-            "realizedR": round(realized / initial_risk_amount, 3),
-            "fees": round(fees, 2),
-            "exitReason": reason,
-            "openedAt": int(position["openedAt"]),
-            "closedAt": now,
-            "durationSeconds": max(0, (now - int(position["openedAt"])) // 1000),
-            "isWin": realized > 0,
-        }
-        paper_db.save_closed_trade(trade)
-        paper_db.delete_position(str(position["id"]))
-        self.positions_by_symbol.pop(symbol, None)
-        self.latest_signals.pop(symbol, None)
-        self.last_position_persist_ms.pop(symbol, None)
-        return trade
-
-    def close_position_manually(self, position_id: str) -> Optional[Dict[str, Any]]:
-        position = next((item for item in self.positions_by_symbol.values() if str(item.get("id")) == position_id), None)
-        if not position:
-            return None
-        symbol = str(position["symbol"])
-        state = self.market_data_service.symbol_states.get(symbol)
-        if not state or float(state.current_price) <= 0:
-            return None
-        return self._close_position(symbol, float(state.current_price), "MANUAL")
-
-    async def on_tick(self, symbol: str, price: float) -> None:
-        position = self.positions_by_symbol.get(symbol)
-        if not position:
-            return
-
-        settings = self.get_settings()
-        side = str(position["side"])
-        entry = float(position["entryPrice"])
-        quantity = float(position.get("quantity", 0.0))
-        initial_risk = max(float(position.get("initialRisk", abs(entry - float(position["stopLoss"])))), 1e-12)
-        favorable_move = price - entry if side == "BUY" else entry - price
-        r_multiple = favorable_move / initial_risk
-
-        if r_multiple >= float(settings["breakevenAtR"]):
-            cost_buffer_pct = (float(settings["feeRatePct"]) * 2.0 + float(settings["slippagePct"])) / 100.0
-            cost_buffer = entry * cost_buffer_pct
-            break_even = entry + cost_buffer if side == "BUY" else entry - cost_buffer
-            if side == "BUY" and break_even > float(position["stopLoss"]):
-                position["stopLoss"] = _round_price(break_even)
-                position["breakEvenActivated"] = True
-            elif side == "SELL" and break_even < float(position["stopLoss"]):
-                position["stopLoss"] = _round_price(break_even)
-                position["breakEvenActivated"] = True
-
-        if r_multiple >= float(settings["trailingStartR"]):
-            trail_distance = max(initial_risk * float(settings["trailingDistanceR"]), initial_risk * 0.5)
-            trailing_stop = price - trail_distance if side == "BUY" else price + trail_distance
-            if side == "BUY" and trailing_stop > float(position["stopLoss"]):
-                position["stopLoss"] = _round_price(trailing_stop)
-                position["trailingActivated"] = True
-            elif side == "SELL" and trailing_stop < float(position["stopLoss"]):
-                position["stopLoss"] = _round_price(trailing_stop)
-                position["trailingActivated"] = True
-
-        stop = float(position["stopLoss"])
-        target = float(position["target1"])
-        if (side == "BUY" and price <= stop) or (side == "SELL" and price >= stop):
-            exit_reason = "TRAILING_STOP" if position.get("trailingActivated") else "BREAK_EVEN" if position.get("breakEvenActivated") else "STOP_LOSS"
-            self._close_position(symbol, price, exit_reason)
-            return
-        if (side == "BUY" and price >= target) or (side == "SELL" and price <= target):
-            self._close_position(symbol, price, "TARGET")
-            return
-        if _now_ms() - int(position["openedAt"]) >= int(float(settings["maxHoldMinutes"]) * 60_000):
-            self._close_position(symbol, price, "TIME_EXIT")
-            return
-
-        gross = (price - entry) * quantity if side == "BUY" else (entry - price) * quantity
-        fee_rate = float(settings["feeRatePct"]) / 100.0
-        estimated_fees = (entry * quantity + price * quantity) * fee_rate
-        unrealized = gross - estimated_fees
-        capital = max(float(settings["capital"]), 1e-12)
-        position["currentPrice"] = _round_price(price)
-        position["unrealizedPnL"] = round(unrealized, 2)
-        position["unrealizedPnLPercent"] = round(unrealized / capital * 100.0, 3)
-        position["rMultiple"] = round(r_multiple, 2)
-        position["lastUpdated"] = _now_ms()
-
-        last_persist = self.last_position_persist_ms.get(symbol, 0)
-        if _now_ms() - last_persist >= 750:
-            paper_db.upsert_position(position)
-            self.last_position_persist_ms[symbol] = _now_ms()
+    def _close(self,symbol,raw,reason):
+        p=self.positions_by_symbol.get(symbol)
+        if not p: return None
+        s=self.get_settings(); side=str(p["side"]); entry=float(p["entryPrice"]); qty=float(p.get("quantity",0)); slip=float(s["slippagePct"])/100; ex=raw*(1-slip if side=="BUY" else 1+slip)
+        gross=(ex-entry)*qty if side=="BUY" else (entry-ex)*qty; fr=float(s["feeRatePct"])/100; fees=(entry*qty+ex*qty)*fr; realized=gross-fees; ira=max(float(p.get("initialRiskAmount",0)),1e-12); capital=max(float(s["capital"]),1e-12); n=now_ms()
+        t={"id":f"CLOSED-{p['id']}","signalId":p.get("signalId"),"strategyVersion":p.get("strategyVersion",self.STRATEGY_VERSION),"symbol":symbol,"side":side,"entryPrice":entry,"exitPrice":price(ex),"size":float(p.get("size",entry*qty)),"quantity":qty,"leverage":float(p.get("leverage",1)),"realizedPnL":round(realized,2),"realizedPnLPercent":round(realized/capital*100,3),"realizedR":round(realized/ira,3),"fees":round(fees,2),"exitReason":reason,"openedAt":int(p["openedAt"]),"closedAt":n,"durationSeconds":max(0,(n-int(p["openedAt"]))//1000),"isWin":realized>0}
+        paper_db.save_closed_trade(t); paper_db.delete_position(str(p["id"])); self.positions_by_symbol.pop(symbol,None); self.last_persist.pop(symbol,None); return t
+    def close_position_manually(self,position_id):
+        p=next((x for x in self.positions_by_symbol.values() if str(x.get("id"))==position_id),None)
+        if not p: return None
+        st=self.market_data_service.symbol_states.get(str(p["symbol"])); return self._close(str(p["symbol"]),float(st.current_price),"MANUAL") if st and float(st.current_price)>0 else None
+    async def on_tick(self,symbol,px):
+        p=self.positions_by_symbol.get(symbol)
+        if not p: return
+        s=self.get_settings(); side=str(p["side"]); entry=float(p["entryPrice"]); qty=float(p.get("quantity",0)); ir=max(float(p.get("initialRisk",abs(entry-float(p["stopLoss"])))),1e-12); fav=px-entry if side=="BUY" else entry-px; rm=fav/ir
+        if rm>=float(s["breakevenAtR"]):
+            fb=entry*float(s["feeRatePct"])/100*2; be=entry+fb if side=="BUY" else entry-fb
+            if (side=="BUY" and be>float(p["stopLoss"])) or (side=="SELL" and be<float(p["stopLoss"])): p["stopLoss"]=price(be); p["breakEvenActivated"]=True
+        if rm>=float(s["trailingStartR"]):
+            tr=ir*float(s["trailingDistanceR"]); ts=px-tr if side=="BUY" else px+tr
+            if (side=="BUY" and ts>float(p["stopLoss"])) or (side=="SELL" and ts<float(p["stopLoss"])): p["stopLoss"]=price(ts); p["trailingActivated"]=True
+        stop,target=float(p["stopLoss"]),float(p["target1"])
+        if (side=="BUY" and px<=stop) or (side=="SELL" and px>=stop): self._close(symbol,px,"TRAILING_STOP" if p.get("trailingActivated") else "BREAK_EVEN" if p.get("breakEvenActivated") else "STOP_LOSS"); return
+        if (side=="BUY" and px>=target) or (side=="SELL" and px<=target): self._close(symbol,px,"TARGET"); return
+        if now_ms()-int(p["openedAt"])>=int(float(s["maxHoldMinutes"])*60000): self._close(symbol,px,"TIME_EXIT"); return
+        gross=(px-entry)*qty if side=="BUY" else (entry-px)*qty; fr=float(s["feeRatePct"])/100; unreal=gross-(entry*qty+px*qty)*fr; capital=max(float(s["capital"]),1e-12)
+        p.update({"currentPrice":price(px),"unrealizedPnL":round(unreal,2),"unrealizedPnLPercent":round(unreal/capital*100,3),"rMultiple":round(rm,2),"lastUpdated":now_ms()})
+        if now_ms()-self.last_persist.get(symbol,0)>=750: paper_db.upsert_position(p); self.last_persist[symbol]=now_ms()
