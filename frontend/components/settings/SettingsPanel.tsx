@@ -14,7 +14,7 @@ export const SettingsPanel: React.FC = () => {
       <input
         type="number"
         step={step}
-        value={Number(settings[key])}
+        value={Number(settings[key] ?? 0)}
         onChange={(e) => updateSettings({ [key]: Number(e.target.value) } as Partial<TerminalSettings>)}
         className="w-full bg-zinc-950 border border-zinc-800 rounded px-3 py-2 text-white font-mono focus:border-emerald-500 focus:outline-none"
       />
@@ -28,7 +28,7 @@ export const SettingsPanel: React.FC = () => {
           <Sliders className="w-5 h-5 text-emerald-400" />
           <div>
             <h3 className="font-semibold text-base">Backend Algo Engine & Risk Controls</h3>
-            <p className="text-[11px] text-zinc-500 mt-0.5">MTPA 3TF · 15m regime → 5m trend → completed 1m breakout</p>
+            <p className="text-[11px] text-zinc-500 mt-0.5">PA MTF V4 · 15m regime → 5m trend → completed 1m breakout / pullback trigger</p>
           </div>
         </div>
         <div className="flex items-center gap-3 bg-zinc-950 px-3 py-1.5 rounded-lg border border-zinc-800">
@@ -45,8 +45,8 @@ export const SettingsPanel: React.FC = () => {
           {riskSnapshot.blocked
             ? `New entries are blocked by the backend risk engine: ${riskSnapshot.blockReason}`
             : isEngineRunning
-              ? 'The server is independently scanning BTC, ETH, SOL, XRP and BNB. Browser refresh/close does not create or cancel signals.'
-              : 'Engine is OFF. Live market data continues, but the backend will not open new paper positions.'}
+              ? 'The server independently scans BTC, ETH, SOL, XRP and BNB. Browser refresh or close does not control strategy execution.'
+              : 'Engine is OFF. Market data and analysis continue, but the backend will not open new paper positions.'}
         </span>
       </div>
 
@@ -110,9 +110,7 @@ export const SettingsPanel: React.FC = () => {
         <div className="bg-zinc-950 border border-zinc-800 rounded p-3"><div className="text-zinc-500">Loss Streak</div><div className="font-mono text-zinc-100 mt-1">{riskSnapshot.consecutiveLosses}</div></div>
       </div>
 
-      <div className="pt-2 text-[11px] text-zinc-500">
-        All values are persisted via <code>/api/trading/settings</code>. Execution is PAPER ONLY; the frontend cannot create a position directly.
-      </div>
+      <div className="pt-2 text-[11px] text-zinc-500">All values are persisted through <code>/api/trading/settings</code>. Execution is PAPER ONLY; frontend code cannot create a trade.</div>
     </div>
   );
 };
